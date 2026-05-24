@@ -120,6 +120,7 @@ jobs:
         run: |
           arduino-cli compile \
             --fqbn "${{ matrix.fqbn }}" \
+            --library "bible_firmware/libraries/TFT_eSPI-ESP32-C5" \
             --build-property "upload.maximum_size=${{ matrix.max_size }}" \
             --output-dir "dist/${{ matrix.board }}" \
             --warnings default \
