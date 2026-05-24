@@ -1732,8 +1732,8 @@ void BibleInterface::goBack() {
             if (reading_from_search) {
                 reading_from_search = false;
                 highlight_verse     = 0;
-                // Restore results list without resetting scroll/selection
-                view         = BV_SEARCH_RESULTS;
+                view      = BV_SEARCH_RESULTS;
+                scroll_px = (float)menu_scroll * (float)srchH();
                 needs_redraw = true;
             } else {
                 goToChapter(cur_book);
