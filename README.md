@@ -1,4 +1,4 @@
-# Marauder Bible Firmware — Setup Guide
+# ESP32 Bible Firmware — Setup Guide
 
 Standalone offline Bible reader for Marauder Pancake, V8, and V6.1.
 Runs as a **separate firmware** in the `ota_0` partition alongside Marauder in `ota_1`.
@@ -14,7 +14,7 @@ Runs as a **separate firmware** in the `ota_0` partition alongside Marauder in `
 
 - Flash the Bible firmware to `ota_0`.
 - Flash Marauder separately to `ota_1` (via Marauder's own OTA tool or esptool).
-- In the Bible app's **Settings → Boot Marauder** restarts into Marauder.
+- In the Bible app's **Settings → Boot OTA_1** restarts into Marauder.
 - Marauder's OTA update feature can switch back to `ota_0`.
 
 ---
@@ -34,7 +34,7 @@ SD card root
     └── bookmarks.txt    ← auto-created by the firmware
 ```
 
-Available OSIS XML source files (in `FZ_Bible_App/sd_directory_builder/xml/`):
+Available OSIS XML source files:
 
 | File | Translation | Language |
 |------|-------------|----------|
@@ -45,7 +45,7 @@ Available OSIS XML source files (in `FZ_Bible_App/sd_directory_builder/xml/`):
 | `luth1912ap.xml` | Luther Bibel 1912 (with Apocrypha) | German |
 | `sch1951.xml` | Schlachter 1951 | German |
 
-Copy as many as you want — the app detects them all and lets you switch between them.
+Copy as many as you want — the app detects them all and lets you switch between them in Settings.
 
 **Approximate size per file:**
 
@@ -112,34 +112,100 @@ Open `bible_firmware/bible_firmware.ino` in Arduino IDE, compile, and upload.
 
 ## Bible Reader UI — Quick Reference
 
-### Navigation (all screens)
-- **Tap `<` (top-left header)** → go back
-- **Tap right nav button** → cycle brightness
-- **Tap left nav button** → bookmarks (from reading view or section screen)
-- **Tap center nav button** → settings
+### Global controls (all screens)
 
-### Book / Chapter Selection
-- **Tap item** → open it
-- List scrolls automatically based on touch position
+| Control | Action |
+|---------|--------|
+| **`<` button (top-left header)** | Go back |
+| **Search icon (top-right header)** | Open Search (available on most screens) |
+
+Navigation flows: Translation → Section → Book → Chapter → Reading.  
+The Translation screen is skipped if only one `.xml` file is on the SD card.
+
+---
+
+### Navigation screens (Translation / Section / Book / Chapter)
+
+| Control | Action |
+|---------|--------|
+| **Tap item** | Open it |
+| **Drag / fling** | Scroll the list |
+| **Left nav — "Marks"** | Open Bookmarks |
+| **Middle nav — "Settings"** | Open Settings |
+| **Right nav — "Bright"** | Cycle brightness (wraps 1→20→1) |
+
+---
 
 ### Reading View
-- **Tap upper half of text area** → previous page (or previous chapter)
-- **Tap lower half of text area** → next page (or next chapter)
-- **Right nav** → add bookmark for current chapter
+
+| Control | Action |
+|---------|--------|
+| **Drag / fling** | Smooth-scroll verses with momentum |
+| **Tap upper half** | Previous page; at top of chapter → previous chapter |
+| **Tap lower half** | Next page; at last line → next chapter |
+| **Tap verse number** | Select that verse (highlighted in accent color) |
+| **Tap adjacent verse number** | Extend selection to include it |
+| **Tap selected verse number** | Shrink or deselect |
+| **Left nav — "Marks"** | Open Bookmarks |
+| **Middle nav — "Settings"** | Open Settings |
+| **Right nav — "+Mark"** | Save bookmark — verse/range if selected, whole chapter if not |
+
+---
 
 ### Settings
+
 | Row | Action |
 |-----|--------|
-| Font | Tap to cycle: Small → Medium → Large |
-| Theme | Tap to toggle Dark / Light |
-| Brightness | Tap to cycle through 10 levels (saved to NVS) |
-| Translation | Tap to cycle if multiple .xml files are on SD |
-| Boot Marauder | Sets ota_1 as boot target and restarts |
-| Back | Return to reading |
+| **Font** | Tap to cycle: Small → Medium → Large |
+| **Theme** | Tap to toggle: Dark / Light |
+| **Brightness** | Tap **[−]** / **[+]** to adjust (20 levels, saved immediately) |
+| **Translation** | Tap to cycle through detected `.xml` files on SD |
+| **Highlight** | Tap **[<]** / **[>]** to cycle accent color (24 options) |
+| **Boot OTA_1** | Sets `ota_1` as boot target and restarts into Marauder |
+| **Calibrate Touch** | *(Resistive boards only)* Run TFT_eSPI touch calibration |
+| **Back nav — "Back"** | Return to previous screen |
+
+---
 
 ### Bookmarks
-- **Tap bookmark** → jump to that chapter
-- **Del (right nav)** → delete selected bookmark
+
+| Control | Action |
+|---------|--------|
+| **Tap bookmark** | Select it (highlight) |
+| **Drag / fling** | Scroll the list |
+| **Middle nav — "View"** | Jump to the selected bookmark |
+| **Right nav — "Del"** | Delete the selected bookmark (confirmation popup) |
+| **Left nav — "Back"** | Return to previous screen |
+
+---
+
+### Search
+
+**Search History screen:**
+
+| Control | Action |
+|---------|--------|
+| **Tap history item** | Select it |
+| **Left nav — "New"** | Open keyboard to type a new search query |
+| **Middle nav — "View"** | Run the selected history item as a search |
+| **Right nav — "Del"** | Delete the selected history item (confirmation popup) |
+
+**Keyboard / search options** (shown above the keyboard when typing):
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| **Partial Match** | On | All query words must appear somewhere in the verse (any order); off = exact phrase |
+| **Ignore Punctuation** | On | Strip punctuation from verse and query before matching |
+| **Scope** | Bible | Tap to cycle: Bible → Section → Book |
+
+**Search Results screen:**
+
+| Control | Action |
+|---------|--------|
+| **Tap result** | Select it (shows verse reference + snippet) |
+| **Drag / fling** | Scroll the list |
+| **Right nav — "View"** | Jump to the selected verse in the reading view |
+| **Left nav — "Back"** | Return to Search History (scroll position preserved) |
 
 ---
 
@@ -151,18 +217,15 @@ Open `bible_firmware/bible_firmware.ino` in Arduino IDE, compile, and upload.
 - Check SD card is FAT32 formatted.
 
 **Verses missing / blank chapters**
-- The XML parser reads up to 30 verses per chapter (`BIBLE_MAX_VERSES_CACHED`).
-  Very long chapters (e.g. Psalm 119 = 176 verses) show only the first 30.
-  Increase `BIBLE_MAX_VERSES_CACHED` in `BibleInterface.h` if your board has PSRAM.
-- Some translations use non-standard OSIS book codes. Check that `osis_code` entries
-  in the `BOOKS[]` table in `BibleInterface.cpp` match your XML file.
+- The XML parser reads up to 30 verses per chapter (`BIBLE_MAX_VERSES_CACHED`) on boards without PSRAM, or 200 with PSRAM (enough for Psalm 119).
+- Some translations use non-standard OSIS book codes. Check that `osis_code` entries in the `BOOKS[]` table in `BibleInterface.cpp` match your XML file.
 
 **Touch not responding**
 - Pancake uses FT6336 (capacitive, I2C). Verify `HAS_CAP_TOUCH` is defined for Pancake.
 - V8/V6.1 use XPT2046 (resistive, SPI). `tft.getTouch()` should work after `tft.init()`.
-- Calibrate resistive touch if taps are offset (call `tft.calibrateTouch()` once).
+- Resistive boards: run **Settings → Calibrate Touch** if taps are offset.
 
-**"Boot Marauder" shows error**
+**"Boot OTA_1" shows error**
 - Flash Marauder to `ota_1` first using esptool or Marauder's OTA tool.
   If `ota_1` is empty, `esp_ota_set_boot_partition` will fail gracefully.
 
