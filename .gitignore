@@ -1,0 +1,18 @@
+# Claude Code
+.claude/
+
+# Arduino IDE local build output
+build/
+dist/
+*.elf
+*.bin
+*.map
+*.hex
+
+# Arduino IDE temp files
+/tmp/
+*.orig
+
+# OS
+.DS_Store
+Thumbs.db

@@ -1,0 +1,134 @@
+name: Build Firmware
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false   # finish all three builds even if one fails
+      matrix:
+        include:
+
+          # ── Pancake (ESP32-C5, 8 MB flash) ───────────────────────────────
+          - board:      MARAUDER_PANCAKE
+            fqbn:       "esp32:esp32:esp32c5:CDCOnBoot=default,CPUFreq=160,FlashFreq=80,FlashMode=qio,FlashSize=8M,PartitionScheme=custom,UploadSpeed=921600"
+            tft_setup:  User_Setup_marauder_pancake
+            partitions: partitions_backup/partitions_8mb.csv
+            max_size:   3604480   # ota_0 slot size (0x370000)
+
+          # ── V8 (ESP32-C5, 8 MB flash) ─────────────────────────────────────
+          - board:      MARAUDER_V8
+            fqbn:       "esp32:esp32:esp32c5:CDCOnBoot=default,CPUFreq=160,FlashFreq=80,FlashMode=qio,FlashSize=8M,PartitionScheme=custom,UploadSpeed=921600"
+            tft_setup:  User_Setup_marauder_v8
+            partitions: partitions_backup/partitions_8mb.csv
+            max_size:   3604480   # ota_0 slot size (0x370000)
+
+          # ── V6.1 (original ESP32, 4 MB flash) ────────────────────────────
+          - board:      MARAUDER_V6_1
+            fqbn:       "esp32:esp32:esp32:CPUFreq=240,FlashFreq=80,FlashMode=dio,FlashSize=4M,PartitionScheme=custom,UploadSpeed=921600"
+            tft_setup:  User_Setup_og_marauder
+            partitions: partitions_backup/partitions_4mb_dualboot.csv
+            max_size:   1769472   # ota_0 slot size (0x1B0000)
+
+    steps:
+      # ── 1. Checkout ────────────────────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ── 2. arduino-cli ─────────────────────────────────────────────────────
+      - name: Set up arduino-cli
+        uses: arduino/setup-arduino-cli@v2
+
+      # ── 3. ESP32 core (cached) ─────────────────────────────────────────────
+      - name: Cache ESP32 Arduino core
+        uses: actions/cache@v4
+        id: esp32-core-cache
+        with:
+          path: ~/.arduino15
+          key: esp32-core-${{ runner.os }}-${{ hashFiles('.github/workflows/build.yml') }}
+
+      - name: Install ESP32 Arduino core
+        if: steps.esp32-core-cache.outputs.cache-hit != 'true'
+        run: |
+          arduino-cli config init --overwrite
+          arduino-cli config add board_manager.additional_urls \
+            https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json
+          arduino-cli core update-index
+          arduino-cli core install esp32:esp32
+
+      - name: Restore arduino-cli config (cache hit path)
+        if: steps.esp32-core-cache.outputs.cache-hit == 'true'
+        run: |
+          arduino-cli config init --overwrite
+          arduino-cli config add board_manager.additional_urls \
+            https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json
+
+      # ── 4. Per-board configuration ─────────────────────────────────────────
+      # Patch configs.h (board #define) and User_Setup_Select.h (TFT driver
+      # include) for this matrix entry, then copy the correct partitions.csv.
+      - name: Configure for ${{ matrix.board }}
+        env:
+          BOARD:      ${{ matrix.board }}
+          TFT_SETUP:  ${{ matrix.tft_setup }}
+          PARTITIONS: ${{ matrix.partitions }}
+        run: |
+          python3 - <<'PYEOF'
+          import re, os
+
+          board     = os.environ["BOARD"]
+          tft_setup = os.environ["TFT_SETUP"]
+
+          # ── configs.h ──────────────────────────────────────────────────
+          path = "bible_firmware/configs.h"
+          with open(path) as f:
+              text = f.read()
+          # Comment out every board define
+          text = re.sub(
+              r'^[ \t]*(?://[ \t]*)?#define (MARAUDER_PANCAKE|MARAUDER_V8|MARAUDER_V6_1)',
+              r'// #define \1', text, flags=re.MULTILINE)
+          # Uncomment just the target
+          text = re.sub(r'// #define ' + re.escape(board), '#define ' + board, text)
+          with open(path, 'w') as f:
+              f.write(text)
+          print(f"configs.h  → #define {board}")
+
+          # ── User_Setup_Select.h ────────────────────────────────────────
+          path = "bible_firmware/libraries/TFT_eSPI-ESP32-C5/User_Setup_Select.h"  # now permanent location
+          with open(path) as f:
+              text = f.read()
+          # Comment out every marauder setup include
+          text = re.sub(
+              r'^[ \t]*(?://[ \t]*)?#include <(User_Setup_og_marauder|User_Setup_marauder_v8|User_Setup_marauder_pancake)\.h>',
+              r'//#include <\1.h>', text, flags=re.MULTILINE)
+          # Uncomment the target setup file
+          text = text.replace(f'//#include <{tft_setup}.h>', f'#include <{tft_setup}.h>')
+          with open(path, 'w') as f:
+              f.write(text)
+          print(f"User_Setup_Select.h  → #include <{tft_setup}.h>")
+          PYEOF
+
+          cp "bible_firmware/$PARTITIONS" bible_firmware/partitions.csv
+          echo "partitions.csv → $PARTITIONS"
+
+      # ── 5. Compile ─────────────────────────────────────────────────────────
+      - name: Compile ${{ matrix.board }}
+        run: |
+          arduino-cli compile \
+            --fqbn "${{ matrix.fqbn }}" \
+            --build-property "upload.maximum_size=${{ matrix.max_size }}" \
+            --output-dir "dist/${{ matrix.board }}" \
+            --warnings default \
+            bible_firmware
+
+      # ── 6. Artifact ────────────────────────────────────────────────────────
+      - name: Upload ${{ matrix.board }} artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware-${{ matrix.board }}
+          path: dist/${{ matrix.board }}/
+          if-no-files-found: error
