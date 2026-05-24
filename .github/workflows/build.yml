@@ -16,14 +16,14 @@ jobs:
 
           # ── Pancake (ESP32-C5, 8 MB flash) ───────────────────────────────
           - board:      MARAUDER_PANCAKE
-            fqbn:       "esp32:esp32:esp32c5:CDCOnBoot=default,CPUFreq=160,FlashFreq=80,FlashMode=qio,FlashSize=8M,PartitionScheme=custom,UploadSpeed=921600"
+            fqbn:       "esp32:esp32:esp32c5:CDCOnBoot=default,CPUFreq=240,FlashFreq=80,FlashMode=qio,FlashSize=8M,PartitionScheme=custom,UploadSpeed=921600"
             tft_setup:  User_Setup_marauder_pancake
             partitions: partitions_backup/partitions_8mb.csv
             max_size:   3604480   # ota_0 slot size (0x370000)
 
           # ── V8 (ESP32-C5, 8 MB flash) ─────────────────────────────────────
           - board:      MARAUDER_V8
-            fqbn:       "esp32:esp32:esp32c5:CDCOnBoot=default,CPUFreq=160,FlashFreq=80,FlashMode=qio,FlashSize=8M,PartitionScheme=custom,UploadSpeed=921600"
+            fqbn:       "esp32:esp32:esp32c5:CDCOnBoot=default,CPUFreq=240,FlashFreq=80,FlashMode=qio,FlashSize=8M,PartitionScheme=custom,UploadSpeed=921600"
             tft_setup:  User_Setup_marauder_v8
             partitions: partitions_backup/partitions_8mb.csv
             max_size:   3604480   # ota_0 slot size (0x370000)
