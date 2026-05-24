@@ -8,7 +8,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // #define MARAUDER_V6_1      // Original ESP32   — ILI9341 240×320, XPT2046 resistive touch
 // #define MARAUDER_V8        // ESP32-C5          — ILI9341 240×320, XPT2046 resistive touch
- #define MARAUDER_PANCAKE   // ESP32-C5          — ST7796  320×480, FT6336  capacitive touch
+// #define MARAUDER_PANCAKE   // ESP32-C5          — ST7796  320×480, FT6336  capacitive touch
 
 // Uncomment to enable verbose serial logging (suppressed in release builds)
 // #define DEVELOPER
