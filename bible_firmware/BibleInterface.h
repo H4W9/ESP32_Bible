@@ -47,7 +47,7 @@
 #define BIBLE_SEARCH_QUERY_LEN  48    // max query length incl null
 #define BIBLE_SEARCH_HIST_MAX   10    // max history entries
 #define BIBLE_SRCH_SNIPPET_LEN   80   // max snippet bytes per result (incl null)
-#ifdef BOARD_HAS_PSRAM
+#ifdef HAS_PSRAM
 #  define BIBLE_MAX_SEARCH_RESULTS 200
 #else
 #  define BIBLE_MAX_SEARCH_RESULTS  50
@@ -62,7 +62,7 @@
 #define BIBLE_BM_LABEL_LEN       32     // max chars in bookmark label
 #define BIBLE_VERSE_BUF         512     // max chars per verse (with null)
 #define BIBLE_LINE_BUF          160     // max chars per wrapped display line
-#ifdef BOARD_HAS_PSRAM
+#ifdef HAS_PSRAM
 #  define BIBLE_MAX_VERSES_CACHED  200  // enough for Psalm 119 (176 verses) + headroom
 #  define BIBLE_MAX_LINES          700  // enough for long chapters at all font sizes
 #else
