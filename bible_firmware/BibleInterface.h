@@ -65,7 +65,7 @@
 #define BIBLE_MAX_TRANS          10     // max detected translations
 #define BIBLE_TRANS_LEN          32     // max chars in translation filename stem
 #define BIBLE_MAX_BM             50     // max stored bookmarks
-#define BIBLE_BM_LABEL_LEN       32     // max chars in bookmark label
+#define BIBLE_BM_LABEL_LEN       48     // max chars in bookmark label (fits song titles)
 #define BIBLE_VERSE_BUF         512     // max chars per verse (with null)
 #define BIBLE_LINE_BUF          160     // max chars per wrapped display line
 #ifdef HAS_PSRAM
@@ -132,9 +132,10 @@ struct BibleBookmark {
 };
 
 struct BibleSearchResult {
-    uint16_t book;      // index into active book table
+    uint16_t book;      // index into active book table (valid for `trans`)
     uint16_t chapter;   // 1-based
     uint8_t verse;      // 1-based
+    uint8_t trans;      // translation index (Songs "All" spans songbooks; else cur_trans)
     char    snippet[BIBLE_SRCH_SNIPPET_LEN]; // verse text excerpt (private codes)
 };
 
@@ -185,6 +186,8 @@ private:
     bool      dark_mode;
     uint8_t   font_num;     // 1=small(8px), 2=medium(16px), 4=large(26px)
     uint8_t   font_color_idx; // 0 = Default (theme fg); else index into FONT_COLOR_VAL[]
+    uint8_t   vnum_color_idx; // 0 = Default (teal); else index into FONT_COLOR_VAL[]
+    uint8_t   orientation;    // 0 = Normal, 1 = Flipped 180° (global, "menu" NVS)
     bool      needs_redraw;
 
     // ── List scroll/select ────────────────────────────────────────────────
@@ -289,6 +292,7 @@ private:
     void drawReading();
     void drawSettings();
     void redrawSettingsContent(); // partial redraw — rows only, no fillScreen/header/nav
+    uint8_t settingsRowCount() const;  // number of settings rows (board-dependent)
 #ifndef HAS_CAP_TOUCH
     void runTouchCalibration();   // show TFT_eSPI calibration wizard, save result to Prefs
 #endif
@@ -382,6 +386,7 @@ private:
     void handleSearchResultsInput();
 
     // ── Navigation helpers ────────────────────────────────────────────────
+    void applyOrientation();                // tft.setRotation per `orientation` (0/180°)
     void goToMainMenu();
     void enterMode(ContentMode m);          // switch namespace/paths/state, scan, route
     void selectTranslation(uint16_t idx);   // set cur_trans, load .toc (Songs/Dict), route
@@ -403,6 +408,7 @@ private:
     // Handles the mode-specific option row (Bible scope / Songs Find / Dict picker).
     bool openSearchKeyboard();
     bool searchBible(const char* query);
+    void searchSongsAll(const char* query);  // Songs "All": body scan across every songbook
     void jumpToSearchResult(uint16_t idx);
     bool searchContains(const char* text, const char* query);
     bool touchInSearchIcon(uint16_t x, uint16_t y);
