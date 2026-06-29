@@ -354,6 +354,9 @@ void BibleInterface::RunSetup() {
     font_num   = 2;
     blInit();   // must run before runTouchCalibration() so the backlight is on
 
+    // Boot splash (SD /splash.raw) — shown in portrait for 2.5 s, then orientation restored.
+    if (drawSplashImage()) { delay(2500); applyOrientation(); }
+
 #ifdef MARAUDER_V6_1
     // V6.1: load stored calibration or run first-boot wizard.
     if (prefs.getUChar("tcal2", 0)) {
@@ -2088,6 +2091,42 @@ void BibleInterface::goToChapter(uint16_t book) {
     scroll_px = (float)menu_scroll * (float)tile_h;
     needs_redraw = true;
 }
+// Boot/easter-egg splash: stream /splash.raw (native-portrait RGB565, big-endian)
+// from the SD card to the panel row-by-row. Always drawn in portrait (rotation 0);
+// the caller restores the user's orientation afterwards. Returns false if absent.
+bool BibleInterface::drawSplashImage() {
+    File f = SD.open("/splash.raw");
+    if (!f) return false;
+#ifdef MARAUDER_PANCAKE
+    const int16_t W0 = 320, H0 = 480;
+#else
+    const int16_t W0 = 240, H0 = 320;
+#endif
+    if ((uint32_t)f.size() != (uint32_t)W0 * H0 * 2) { f.close(); return false; }
+    tft.setRotation(0);
+    tft.setSwapBytes(true);
+    uint16_t row[W0];
+    for (int16_t y = 0; y < H0; y++) {
+        if (f.read((uint8_t*)row, W0 * 2) != (int)(W0 * 2)) break;
+        tft.pushImage(0, y, W0, 1, row);
+    }
+    tft.setSwapBytes(false);
+    f.close();
+    return true;
+}
+
+void BibleInterface::showSplashUntilTap() {
+    if (!drawSplashImage()) return;
+    delay(350);                       // ignore the triggering tap's release
+    for (;;) {
+        uint16_t x, y;
+        if (pollTouch(&x, &y)) break; // any tap dismisses
+        delay(20);
+    }
+    applyOrientation();               // restore the user's orientation
+    needs_redraw = true;
+}
+
 void BibleInterface::drawLoading() {
     tft.fillScreen(bg());
     char hdr[48];
@@ -2489,6 +2528,8 @@ void BibleInterface::handleMainMenuInput() {
     }
     if (!down && touch_was_down) {
         touch_was_down = false;
+        // Easter egg: tap the header to show the boot splash again until tapped.
+        if ((int16_t)touch_down_y < (int16_t)hdrH()) { showSplashUntilTap(); return; }
         const int16_t margin = 16;
         const int16_t gap    = 14;
         const int16_t sh     = 34;

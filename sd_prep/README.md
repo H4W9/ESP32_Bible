@@ -199,10 +199,30 @@ Malformed XML in one file makes only that translation fail to open; the others s
 
 ---
 
+## Boot splash — `make_splash.py`
+
+Optional. Converts an image into `splash.raw`, a raw RGB565 blob sized to your screen,
+shown for 2.5 s on boot (and again whenever you tap the main-menu header). The image is
+cropped to the screen's portrait aspect and centered on the chip.
+
+```cmd
+pip install pillow
+:: Pancake (320x480):
+python make_splash.py esp32c5.png --board pancake
+:: V8 / V6.1 (240x320):
+python make_splash.py esp32c5.png --board v8
+:: nudge the crop onto the chip if needed (fractions of the image):
+python make_splash.py esp32c5.png --board pancake --cx 0.62 --cy 0.48
+```
+
+Copy the result to the **SD card root** as `\splash.raw`. If it's absent, boot just skips the
+splash. (If colors look swapped, tell me — it's a one-line byte-order flip in the firmware.)
+
 ## Final SD card layout
 
 ```
 SD root\
+  splash.raw                                   (optional, from make_splash.py)
   bible\        asv.xml, web.xml, …            (Bible mode)
   songs\        *.xml + *.toc                  (from generate_songs_xml.py)
   dictionary\   *.xml + *.toc + *.pgx          (from generate_dict_xml.py)

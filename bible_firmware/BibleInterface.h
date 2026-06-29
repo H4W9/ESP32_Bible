@@ -300,6 +300,8 @@ private:
     void clearContent();
 
     void drawLoading();
+    bool drawSplashImage();      // blit /splash.raw (native-portrait RGB565) — returns true if shown
+    void showSplashUntilTap();   // easter egg: show splash until the screen is tapped
     void drawMainMenu();
     void drawTransSelect();
     void drawSectionSelect();
