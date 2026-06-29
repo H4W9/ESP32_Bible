@@ -110,6 +110,11 @@ def clip(s: str, n: int) -> str:
     return s if len(s) <= n else s[:n]
 
 
+def toc_safe(s: str) -> str:
+    """Strip characters that would break a pipe-delimited single-line .toc field."""
+    return s.replace("|", "/").replace("\r", " ").replace("\n", " ").strip()
+
+
 # ── Excel loading ────────────────────────────────────────────────────────────
 def load_books(path: str) -> dict:
     """{book_id: title} for active books (skips placeholders / Active==False)."""
@@ -223,7 +228,7 @@ def generate(data_path, books_path, cats_path, out_dir, make_zip):
 
             song_no = 0
             for sec_idx, cid in enumerate(cat_order):
-                cat_name = clip(cats[(bid, cid)], SECNAME_MAX)
+                cat_name = toc_safe(clip(cats[(bid, cid)], SECNAME_MAX))
                 toc_lines.append(f"S|{cat_name}")
 
                 for c2, title, stanzas in songlist:
@@ -232,7 +237,7 @@ def generate(data_path, books_path, cats_path, out_dir, make_zip):
                     song_no += 1
                     code = f"S{song_no}"
                     disp = normalize_title(title) if title else f"Song {song_no}"
-                    disp = clip(disp, DISPLAY_MAX)
+                    disp = toc_safe(clip(disp, DISPLAY_MAX))
 
                     offset = xf.tell()      # byte offset of this song's first verse
                     book_entries.append((code, disp, sec_idx, offset))

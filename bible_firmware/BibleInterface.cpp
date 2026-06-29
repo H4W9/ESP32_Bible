@@ -1776,11 +1776,18 @@ void BibleInterface::srchHistPath(char* out, size_t n) const {
 // ─────────────────────────────────────────────────────────────────────────────
 // Runtime structure tables (Songs / Dictionary) — allocated from PSRAM if present
 // ─────────────────────────────────────────────────────────────────────────────
+// Allocate from PSRAM when available, but ALWAYS fall back to internal SRAM if
+// PSRAM is absent or not enabled in the build — these tables are small (a few KB,
+// up to ~50 KB for the largest songbook) and must never fail just because PSRAM
+// isn't there. A NULL here used to crash Bible reads and bounce Songs/Dict to the menu.
+static inline void* rt_alloc(size_t sz) {
 #ifdef HAS_PSRAM
-  #define RT_MALLOC(sz) ps_malloc(sz)
-#else
-  #define RT_MALLOC(sz) malloc(sz)
+    void* p = ps_malloc(sz);
+    if (p) return p;
 #endif
+    return malloc(sz);
+}
+#define RT_MALLOC(sz) rt_alloc(sz)
 
 void BibleInterface::freeRuntime() {
     if (rt_books)     { free(rt_books);     rt_books     = nullptr; }
@@ -1798,60 +1805,77 @@ bool BibleInterface::loadToc(const char* stem) {
     char path[80];
     snprintf(path, sizeof(path), "%s/%s.toc", basePath(), stem);
 
+    // Open ONCE and read the whole file into a buffer, then parse from memory.
+    // (Avoids reopening the same SD file twice, which is unreliable on some builds.)
     File f = SD.open(path);
     if (!f) { Serial.printf("[%s] TOC missing: %s\n", nvsNamespace(), path); return false; }
-
-    // Pass 1: count rows so the tables can be sized exactly.
-    uint16_t nsec = 0, nbook = 0;
-    while (f.available()) {
-        String line = f.readStringUntil('\n');
-        if (line.length() < 2 || line[1] != '|') continue;
-        if      (line[0] == 'S') nsec++;
-        else if (line[0] == 'B') nbook++;
-    }
+    size_t sz = f.size();
+    if (sz == 0) { f.close(); Serial.printf("[%s] TOC empty: %s\n", nvsNamespace(), path); return false; }
+    char* buf = (char*)RT_MALLOC(sz + 1);
+    if (!buf) { f.close(); Serial.println(F("[toc] alloc fail")); return false; }
+    size_t got = f.read((uint8_t*)buf, sz);
     f.close();
-    if (nbook == 0) return false;
+    buf[got] = 0;
+
+    // Pass 1: count S| and B| lines.
+    uint16_t nsec = 0, nbook = 0;
+    for (char* ln = buf; *ln; ) {
+        char* nl = strchr(ln, '\n');
+        size_t len = nl ? (size_t)(nl - ln) : strlen(ln);
+        if (len >= 2 && ln[1] == '|') {
+            if      (ln[0] == 'S') nsec++;
+            else if (ln[0] == 'B') nbook++;
+        }
+        if (!nl) break;
+        ln = nl + 1;
+    }
+    if (nbook == 0) { free(buf); return false; }
 
     rt_secs      = (RtSec*)   RT_MALLOC(sizeof(RtSec)   * (nsec ? nsec : 1));
     rt_books     = (RtBook*)  RT_MALLOC(sizeof(RtBook)  * nbook);
     book_offsets = (uint32_t*)RT_MALLOC(sizeof(uint32_t)* nbook);
-    if (!rt_secs || !rt_books || !book_offsets) { freeRuntime(); return false; }
+    if (!rt_secs || !rt_books || !book_offsets) { free(buf); freeRuntime(); return false; }
     book_offsets_cap = nbook;
 
-    // Pass 2: fill.
-    f = SD.open(path);
-    if (!f) { freeRuntime(); return false; }
+    // Pass 2: fill (parse each line in place; field separator is '|').
     uint16_t si = 0, bi = 0;
-    while (f.available()) {
-        String line = f.readStringUntil('\n');
-        line.trim();
-        if (line.length() < 2 || line[1] != '|') continue;
-        if (line[0] == 'S' && si < nsec) {
-            String name = line.substring(2);
-            strncpy(rt_secs[si].name, name.c_str(), RT_SEC_NAME_LEN - 1);
-            rt_secs[si].name[RT_SEC_NAME_LEN - 1] = 0;
-            rt_secs[si].start = 0; rt_secs[si].len = 0;
-            si++;
-        } else if (line[0] == 'B' && bi < nbook) {
-            int p1 = line.indexOf('|', 2);
-            int p2 = (p1 >= 0) ? line.indexOf('|', p1 + 1) : -1;
-            int p3 = (p2 >= 0) ? line.indexOf('|', p2 + 1) : -1;
-            int p4 = (p3 >= 0) ? line.indexOf('|', p3 + 1) : -1;
-            if (p1 < 0 || p2 < 0 || p3 < 0 || p4 < 0) continue;
-            String code = line.substring(2, p1);
-            String disp = line.substring(p1 + 1, p2);
-            uint16_t chaps  = (uint16_t)line.substring(p2 + 1, p3).toInt();
-            uint16_t secidx = (uint16_t)line.substring(p3 + 1, p4).toInt();
-            uint32_t off    = (uint32_t)strtoul(line.substring(p4 + 1).c_str(), nullptr, 10);
-            strncpy(rt_books[bi].code,    code.c_str(), RT_CODE_LEN - 1); rt_books[bi].code[RT_CODE_LEN - 1] = 0;
-            strncpy(rt_books[bi].display, disp.c_str(), RT_DISP_LEN - 1); rt_books[bi].display[RT_DISP_LEN - 1] = 0;
-            rt_books[bi].chapters = chaps ? chaps : 1;
-            rt_books[bi].section  = secidx;
-            book_offsets[bi]      = off;
-            bi++;
+    for (char* ln = buf; *ln; ) {
+        char* nl = strchr(ln, '\n');
+        if (nl) *nl = 0;                          // terminate this line
+        // strip a trailing '\r' (in case the file has CRLF endings)
+        size_t len = strlen(ln);
+        while (len && (ln[len - 1] == '\r' || ln[len - 1] == ' ')) ln[--len] = 0;
+
+        if (len >= 2 && ln[1] == '|') {
+            if (ln[0] == 'S' && si < nsec) {
+                strncpy(rt_secs[si].name, ln + 2, RT_SEC_NAME_LEN - 1);
+                rt_secs[si].name[RT_SEC_NAME_LEN - 1] = 0;
+                rt_secs[si].start = 0; rt_secs[si].len = 0;
+                si++;
+            } else if (ln[0] == 'B' && bi < nbook) {
+                // B|<code>|<display>|<chapters>|<sectionIndex>|<byteOffset>
+                char* f1 = strchr(ln + 2, '|');
+                char* f2 = f1 ? strchr(f1 + 1, '|') : nullptr;
+                char* f3 = f2 ? strchr(f2 + 1, '|') : nullptr;
+                char* f4 = f3 ? strchr(f3 + 1, '|') : nullptr;
+                if (f1 && f2 && f3 && f4) {
+                    *f1 = *f2 = *f3 = *f4 = 0;       // split into fields
+                    strncpy(rt_books[bi].code, ln + 2, RT_CODE_LEN - 1);
+                    rt_books[bi].code[RT_CODE_LEN - 1] = 0;
+                    strncpy(rt_books[bi].display, f1 + 1, RT_DISP_LEN - 1);
+                    rt_books[bi].display[RT_DISP_LEN - 1] = 0;
+                    uint16_t chaps = (uint16_t)atoi(f2 + 1);
+                    rt_books[bi].chapters = chaps ? chaps : 1;
+                    rt_books[bi].section  = (uint16_t)atoi(f3 + 1);
+                    book_offsets[bi]      = (uint32_t)strtoul(f4 + 1, nullptr, 10);
+                    bi++;
+                }
+            }
         }
+        if (!nl) break;
+        ln = nl + 1;
     }
-    f.close();
+    free(buf);
     rt_book_count = bi;
     rt_sec_count  = si;
 
@@ -1897,7 +1921,7 @@ void BibleInterface::goToMainMenu() {
 
 void BibleInterface::drawMainMenu() {
     tft.fillScreen(bg());
-    drawHeader("Marauder Library", false);
+    drawHeader("ESP-32 Library", false);
     const int16_t margin = 16;
     const int16_t gap    = 14;
     int16_t top   = (int16_t)contentY() + 12;
@@ -1959,7 +1983,7 @@ void BibleInterface::enterMode(ContentMode m) {
 
     if (trans_count == 0) {
         tft.fillScreen(bg());
-        drawHeader("Marauder Library", false);
+        drawHeader("ESP-32 Library", false);
         tft.setTextColor(TFT_RED, bg());
         char msg[48];
         snprintf(msg, sizeof(msg), "No %s files on SD", MENU_LABELS[m]);
@@ -1993,7 +2017,23 @@ void BibleInterface::selectTranslation(uint16_t idx) {
     book_idx_valid = false;
 
     if (mode != MODE_BIBLE) {
-        if (!loadToc(trans_stems[cur_trans])) { goToMainMenu(); return; }
+        if (!loadToc(trans_stems[cur_trans])) {
+            // Structure file missing/unreadable — tell the user which file, then
+            // wait for a tap (rather than silently bouncing to the menu).
+            tft.fillScreen(bg());
+            drawHeader("ESP-32 Library", false);
+            tft.setTextColor(TFT_RED, bg());
+            char msg[72];
+            snprintf(msg, sizeof(msg), "Missing %s/%s.toc", basePath(), trans_stems[cur_trans]);
+            tft.drawCentreString(msg, scrW() / 2, scrH() / 2 - 12, 2);
+            tft.setTextColor(dim_fg(), bg());
+            tft.drawCentreString("Copy the .toc next to the .xml", scrW() / 2, scrH() / 2 + 10, 2);
+            tft.drawCentreString("Tap to go back", scrW() / 2, scrH() / 2 + 32, 2);
+            mode = MODE_BIBLE;
+            view = BV_MAIN_MENU;
+            needs_redraw = false;
+            return;
+        }
         if (cur_book >= numBooks()) cur_book = 0;
         cur_sec = (numBooks() > 0) ? bookSection(cur_book) : 0;
         if (cur_chapter == 0 || cur_chapter > bookChapters(cur_book)) cur_chapter = 1;
