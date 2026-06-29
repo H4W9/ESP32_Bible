@@ -42,8 +42,14 @@
 // SD card paths
 // ─────────────────────────────────────────────────────────────────────────────
 #define BIBLE_SD_BASE      "/bible"          // directory scanned for .xml files
+#define SONGS_SD_BASE      "/songs"          // Songs mode XML directory
+#define DICT_SD_BASE       "/dictionary"     // Dictionary mode XML directory
 #define BIBLE_BM_FILE      "/bible/bookmarks.txt"
 #define BIBLE_SRCH_HIST_FILE    "/bible/srch_hist.txt"
+// Runtime structure tables (Songs / Dictionary — loaded from a .toc beside the .xml)
+#define RT_DISP_LEN        48     // book display name buffer (e.g. song title)
+#define RT_CODE_LEN        12     // osis code buffer (e.g. "S730", "SYM")
+#define RT_SEC_NAME_LEN    48     // section display name buffer (e.g. category)
 #define BIBLE_SEARCH_QUERY_LEN  48    // max query length incl null
 #define BIBLE_SEARCH_HIST_MAX   10    // max history entries
 #define BIBLE_SRCH_SNIPPET_LEN   80   // max snippet bytes per result (incl null)
@@ -90,7 +96,17 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // View state machine
 // ─────────────────────────────────────────────────────────────────────────────
+// Content modes — Bible (static 76-book table) / Songs / Dictionary
+// (structure loaded at runtime from a .toc file). Each mode has its own NVS
+// namespace, SD directory, bookmarks file and search history.
+enum ContentMode {
+    MODE_BIBLE = 0,
+    MODE_SONGS = 1,
+    MODE_DICT  = 2,
+};
+
 enum BibleView {
+    BV_MAIN_MENU,       // root: pick Bible / Songs / Dictionary
     BV_TRANS_SELECT,    // pick translation (skipped if only one exists)
     BV_SECTION_SELECT,  // pick OT / Prophets / Apocrypha / NT
     BV_BOOK_SELECT,     // pick book within selected section
@@ -106,16 +122,18 @@ enum BibleView {
 // Structs
 // ─────────────────────────────────────────────────────────────────────────────
 struct BibleBookmark {
-    uint8_t book;                       // index into BOOKS[]
-    uint8_t chapter;                    // 1-based
+    uint16_t book;                      // index into active book table
+    uint16_t chapter;                   // 1-based
     uint8_t verse_first;                // 0 = whole chapter; else 1-based verse start
     uint8_t verse_last;                 // 0 = whole chapter; else >= verse_first
+    uint8_t trans;                      // translation index (Songs/Dict: which file);
+                                        //   unused for Bible (book index is canon-global)
     char    label[BIBLE_BM_LABEL_LEN];  // e.g. "Gen 1" or "Gen 1:5" or "Gen 1:5-8"
 };
 
 struct BibleSearchResult {
-    uint8_t book;       // index into BOOKS[]
-    uint8_t chapter;    // 1-based
+    uint16_t book;      // index into active book table
+    uint16_t chapter;   // 1-based
     uint8_t verse;      // 1-based
     char    snippet[BIBLE_SRCH_SNIPPET_LEN]; // verse text excerpt (private codes)
 };
@@ -125,6 +143,19 @@ struct BibleBook {
     const char* osis_code;  // "Gen"         OSIS book identifier used in XML osisID
     uint8_t     chapters;   // canonical chapter count
     uint8_t     section;    // BIBLE_SEC_OT / PR / AP / NT
+};
+
+// Runtime book/section tables for Songs & Dictionary modes (loaded from .toc).
+struct RtBook {
+    char     display[RT_DISP_LEN];  // song title / dictionary letter label
+    char     code[RT_CODE_LEN];     // osisID code prefix (".-free", unique in file)
+    uint16_t chapters;              // chapter count (1 for songs; pages for dict)
+    uint16_t section;               // index into rt_secs[]
+};
+struct RtSec {
+    char     name[RT_SEC_NAME_LEN]; // category / direction label
+    uint16_t start;                 // first book index in this section
+    uint16_t len;                   // number of books in this section
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -138,9 +169,16 @@ private:
 
     // ── Navigation position ───────────────────────────────────────────────
     uint8_t  cur_sec;
-    uint8_t  cur_book;      // index into BOOKS[]
-    uint8_t  cur_chapter;   // 1-based
+    uint16_t cur_book;      // index into active book table
+    uint16_t cur_chapter;   // 1-based
     uint8_t  cur_trans;     // index into trans_stems[]
+
+    // ── Content mode + runtime structure (Songs / Dictionary) ─────────────
+    ContentMode mode;       // MODE_BIBLE uses static BOOKS[]; others use rt_*
+    RtBook*  rt_books;      // PSRAM/heap; valid for Songs/Dict
+    uint16_t rt_book_count;
+    RtSec*   rt_secs;
+    uint16_t rt_sec_count;
 
     // ── View state ────────────────────────────────────────────────────────
     BibleView view;
@@ -157,8 +195,8 @@ private:
 
     // ── Verse cache (one chapter at a time) ───────────────────────────────
     char      verse_buf[BIBLE_MAX_VERSES_CACHED][BIBLE_VERSE_BUF];
-    uint8_t   cached_book;
-    uint8_t   cached_chap;
+    uint16_t  cached_book;
+    uint16_t  cached_chap;
     uint8_t   cached_count;  // number of verses actually loaded
 
     // ── Wrapped text lines ────────────────────────────────────────────────
@@ -215,7 +253,10 @@ private:
     uint8_t   vbuf_i;           // ring buffer write index (0-3)
 
     // ── Book byte-offset index (fast chapter loads) ───────────────────────
-    uint32_t  book_offsets[BIBLE_BOOK_COUNT]; // byte offset of first verse per book in XML
+    // Dynamically allocated, sized to numBooks() for the active mode. For Bible
+    // it is filled from the .idx file; for Songs/Dict it is filled by loadToc().
+    uint32_t* book_offsets;                   // byte offset of first verse per book
+    uint16_t  book_offsets_cap;               // allocated entry count
     bool      book_idx_valid;                 // true when book_offsets matches cur_trans
     uint8_t   book_idx_trans;                 // cur_trans value when index was built/loaded
 
@@ -239,6 +280,7 @@ private:
     void clearContent();
 
     void drawLoading();
+    void drawMainMenu();
     void drawTransSelect();
     void drawSectionSelect();
     void drawBookSelect();
@@ -258,7 +300,7 @@ private:
     void drawSearchProgress(uint32_t done, uint32_t total);
 
     void drawListRow(int16_t y_px, const char* text, bool selected, bool has_arrow = true);
-    void redrawListContent(uint8_t item_count); // partial redraw during scroll (no header/nav)
+    void redrawListContent(uint16_t item_count); // partial redraw during scroll (no header/nav)
     void redrawChapterContent(); // partial redraw during scroll (no header/nav)
     void redrawSearchResultsContent(); // partial redraw of search result list
     void drawScrollBar(int16_t total, int16_t vis, int16_t top);
@@ -271,6 +313,23 @@ private:
     uint16_t sel_bg()  const;
     uint16_t dim_fg()  const;
     uint16_t verse_num_fg() const;
+
+    // ── Structure accessors (Bible static table  OR  runtime Songs/Dict) ───
+    uint16_t numBooks() const { return (mode == MODE_BIBLE) ? BIBLE_BOOK_COUNT : rt_book_count; }
+    uint8_t  numSecs()  const { return (mode == MODE_BIBLE) ? BIBLE_SEC_COUNT  : (uint8_t)rt_sec_count; }
+    const char* bookDisplay(uint16_t i) const { return (mode == MODE_BIBLE) ? BOOKS[i].display   : rt_books[i].display; }
+    const char* bookCode(uint16_t i)    const { return (mode == MODE_BIBLE) ? BOOKS[i].osis_code : rt_books[i].code; }
+    uint16_t bookChapters(uint16_t i)   const { return (mode == MODE_BIBLE) ? BOOKS[i].chapters  : rt_books[i].chapters; }
+    uint16_t bookSection(uint16_t i)    const { return (mode == MODE_BIBLE) ? BOOKS[i].section   : rt_books[i].section; }
+    const char* secName(uint8_t s)      const { return (mode == MODE_BIBLE) ? SEC_NAME_EN[s]     : rt_secs[s].name; }
+    uint16_t secStart(uint8_t s)        const { return (mode == MODE_BIBLE) ? SEC_BOOK_START[s]  : rt_secs[s].start; }
+    uint16_t secLen(uint8_t s)          const { return (mode == MODE_BIBLE) ? SEC_BOOK_COUNT_[s] : rt_secs[s].len; }
+
+    // ── Mode-parameterized SD paths / NVS namespace ───────────────────────
+    const char* basePath() const;                       // "/bible" | "/songs" | "/dictionary"
+    const char* nvsNamespace() const;                   // "bible" | "songs" | "dict"
+    void        bmPath(char* out, size_t n) const;      // <base>/bookmarks.txt
+    void        srchHistPath(char* out, size_t n) const;// <base>/srch_hist.txt
 
     // ── Layout ────────────────────────────────────────────────────────────
     uint16_t scrW()     const;
@@ -310,7 +369,8 @@ private:
     void  updateFling(uint32_t now);            // called each frame when fling_active
     void  stopFling();                          // cancel momentum, clear buffer
 
-    void handleListInput(uint8_t item_count);
+    void handleMainMenuInput();
+    void handleListInput(uint16_t item_count);
     void handleChapterInput();
     void handleReadingInput();
     void handleSettingsInput();
@@ -319,11 +379,16 @@ private:
     void handleSearchResultsInput();
 
     // ── Navigation helpers ────────────────────────────────────────────────
+    void goToMainMenu();
+    void enterMode(ContentMode m);          // switch namespace/paths/state, scan, route
+    void selectTranslation(uint16_t idx);   // set cur_trans, load .toc (Songs/Dict), route
+    bool loadToc(const char* stem);         // fill rt_books/rt_secs/book_offsets from <base>/<stem>.toc
+    void freeRuntime();                      // free rt_books/rt_secs/book_offsets
     void goToTransSelect();
     void goToSection();
     void goToBook(uint8_t sec);
-    void goToChapter(uint8_t book);
-    void goToReading(uint8_t chapter, int16_t start_line = 0);
+    void goToChapter(uint16_t book);
+    void goToReading(uint16_t chapter, int16_t start_line = 0);
     void goToSettings();
     void goToBookmarks();
     void addBookmarkCurrent();
@@ -337,11 +402,11 @@ private:
     void addToSearchHistory(const char* query);
     void saveSearchHistory();
     void loadSearchHistory();
-    bool parseOsisID(const char* osisID, uint8_t& book_out, uint8_t& chap_out, uint8_t& verse_out);
+    bool parseOsisID(const char* osisID, uint16_t& book_out, uint16_t& chap_out, uint8_t& verse_out);
 
     // ── XML streaming parser ──────────────────────────────────────────────
     // Loads all verses for (book, chapter) from /bible/<stem>.xml into verse_buf.
-    bool   cacheChapter(uint8_t book, uint8_t chapter);
+    bool   cacheChapter(uint16_t book, uint16_t chapter);
 
     // Low-level XML parser state machine used by cacheChapter.
     struct XmlState {

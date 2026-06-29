@@ -210,9 +210,11 @@ const BibleBook BibleInterface::BOOKS[BIBLE_BOOK_COUNT] = {
 // ─────────────────────────────────────────────────────────────────────────────
 BibleInterface::BibleInterface()
     : cur_sec(0), cur_book(0), cur_chapter(1), cur_trans(0),
-      view(BV_SECTION_SELECT), dark_mode(true), font_num(2), needs_redraw(true),
+      mode(MODE_BIBLE), rt_books(nullptr), rt_book_count(0),
+      rt_secs(nullptr), rt_sec_count(0),
+      view(BV_MAIN_MENU), dark_mode(true), font_num(2), needs_redraw(true),
       menu_sel(0), menu_scroll(0), read_line(0),
-      cached_book(255), cached_chap(0), cached_count(0),
+      cached_book(0xFFFF), cached_chap(0), cached_count(0),
       line_count(0), trans_count(0), bm_count(0), bm_sel(0), bm_scroll(0),
       bm_confirm_pending(false),
       search_hist_count(0), search_hist_sel(0),
@@ -227,6 +229,7 @@ BibleInterface::BibleInterface()
       scroll_dragging(false),
       scroll_px(0.f), fling_vel(0.f), fling_ms(0), fling_active(false),
       drag_origin_px(0.f), vbuf_i(0),
+      book_offsets(nullptr), book_offsets_cap(0),
       book_idx_valid(false), book_idx_trans(0xFF),
       line_spr(&tft)
 #ifdef HAS_BATTERY
@@ -235,7 +238,7 @@ BibleInterface::BibleInterface()
 {
     memset(vbuf_y,        0, sizeof(vbuf_y));
     memset(vbuf_t,        0, sizeof(vbuf_t));
-    memset(book_offsets,  0, sizeof(book_offsets));
+    if (book_offsets) memset(book_offsets, 0, (size_t)book_offsets_cap * sizeof(uint32_t));
     memset(search_query,  0, sizeof(search_query));
     memset(search_hist,   0, sizeof(search_hist));
     memset(search_results,0, sizeof(search_results));
@@ -247,13 +250,20 @@ BibleInterface::BibleInterface()
 void BibleInterface::RunSetup() {
     tft.init();
     tft.setRotation(0);
-    tft.fillScreen(bg());
 
 #ifdef HAS_CAP_TOUCH
     ft6336_init();
 #endif
 
-    prefs.begin("bible", false);
+    // Menu-level settings live in their own NVS namespace ("menu"): appearance of
+    // the main menu plus the hardware touch calibration (which is board-global).
+    // Each content mode opens its own namespace in enterMode().
+    prefs.begin("menu", false);
+    mode       = MODE_BIBLE;            // accessors unused at the menu; harmless default
+    dark_mode  = prefs.getBool ("dark",   true);
+    accent_idx = prefs.getUChar("accent", 0);
+    if (accent_idx >= ACCENT_COUNT) accent_idx = 0;
+    font_num   = 2;
     blInit();   // must run before runTouchCalibration() so the backlight is on
 
 #ifdef MARAUDER_V6_1
@@ -276,23 +286,8 @@ void BibleInterface::RunSetup() {
 #ifdef HAS_BATTERY
     battInit();
 #endif
-    loadState();
-    loadBookmarks();
-    loadSearchHistory();
-    scanTranslations();
 
-    if (trans_count == 0) {
-        tft.setTextColor(TFT_RED, TFT_BLACK);
-        tft.drawCentreString("No Bible found on SD!", scrW()/2, scrH()/2 - 10, 2);
-        tft.drawCentreString("Copy .xml to /bible/",  scrW()/2, scrH()/2 + 14, 2);
-        return;
-    }
-
-    // Use the nav helpers so menu_sel/scroll_px are set from the restored state
-    if (trans_count == 1)
-        goToSection();       // highlights cur_sec, scrolls to it
-    else
-        goToTransSelect();   // highlights cur_trans, scrolls to it
+    goToMainMenu();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -306,6 +301,7 @@ void BibleInterface::main(uint32_t currentTime) {
 
     if (needs_redraw) {
         switch (view) {
+            case BV_MAIN_MENU:       drawMainMenu();       break;
             case BV_TRANS_SELECT:    drawTransSelect();    break;
             case BV_SECTION_SELECT:  drawSectionSelect();  break;
             case BV_BOOK_SELECT:     drawBookSelect();     break;
@@ -320,9 +316,10 @@ void BibleInterface::main(uint32_t currentTime) {
     }
 
     switch (view) {
+        case BV_MAIN_MENU:       handleMainMenuInput();                 break;
         case BV_TRANS_SELECT:    handleListInput(trans_count);          break;
-        case BV_SECTION_SELECT:  handleListInput(BIBLE_SEC_COUNT);      break;
-        case BV_BOOK_SELECT:     handleListInput(SEC_BOOK_COUNT_[cur_sec]); break;
+        case BV_SECTION_SELECT:  handleListInput(numSecs());      break;
+        case BV_BOOK_SELECT:     handleListInput(secLen(cur_sec)); break;
         case BV_CHAPTER_SELECT:  handleChapterInput(); break;
         case BV_READING:         handleReadingInput();                  break;
         case BV_SETTINGS:        handleSettingsInput();                 break;
@@ -487,7 +484,7 @@ void BibleInterface::drawScrollBar(int16_t total, int16_t vis, int16_t top) {
 // Uses scroll_px for sub-item-height pixel accuracy.
 // setViewport clips rows that extend into the header or nav bar zones.
 // startWrite / endWrite batches all SPI transfers in one transaction for speed.
-void BibleInterface::redrawListContent(uint8_t item_count) {
+void BibleInterface::redrawListContent(uint16_t item_count) {
     int16_t sub_px      = (int16_t)fmodf(scroll_px, (float)itemH());
     int16_t first       = (int16_t)(scroll_px / (float)itemH());
     int16_t content_top = (int16_t)contentY();
@@ -511,11 +508,11 @@ void BibleInterface::redrawListContent(uint8_t item_count) {
                             idx == (int16_t)menu_sel);
                 break;
             case BV_SECTION_SELECT:
-                if (idx < (int16_t)BIBLE_SEC_COUNT)
-                    drawListRow(y, SEC_NAME_EN[idx], idx == (int16_t)menu_sel);
+                if (idx < (int16_t)numSecs())
+                    drawListRow(y, secName(idx), idx == (int16_t)menu_sel);
                 break;
             case BV_BOOK_SELECT:
-                drawListRow(y, BOOKS[SEC_BOOK_START[cur_sec] + idx].display,
+                drawListRow(y, bookDisplay(secStart(cur_sec) + idx),
                             idx == (int16_t)menu_sel);
                 break;
             case BV_BOOKMARKS:
@@ -546,7 +543,7 @@ void BibleInterface::redrawListContent(uint8_t item_count) {
 // which would trigger a full drawChapterSelect() → fillScreen() → flash next loop.
 // startWrite / endWrite batches all SPI transfers in one transaction for speed.
 void BibleInterface::redrawChapterContent() {
-    uint8_t  chaps      = BOOKS[cur_book].chapters;
+    uint16_t  chaps      = bookChapters(cur_book);
     uint16_t tile_w     = scrW() / 5;
     uint16_t tile_h     = 36;
     uint8_t  vis_rows   = (uint8_t)(contentH() / tile_h);
@@ -559,7 +556,7 @@ void BibleInterface::redrawChapterContent() {
 
     for (uint8_t row = 0; row < vis_rows; row++) {
         for (uint8_t col = 0; col < 5; col++) {
-            uint8_t ch = (uint8_t)((menu_scroll + row) * 5 + col + 1);
+            uint16_t ch = (uint16_t)((menu_scroll + row) * 5 + col + 1);
             uint16_t x = col * tile_w;
             uint16_t y = contentY() + row * tile_h;
             if (ch > chaps) {
@@ -568,7 +565,7 @@ void BibleInterface::redrawChapterContent() {
                     tft.fillRect(x, y, scrW() - 6 - x, tile_h, bg());
                 break;
             }
-            bool     sel     = (ch == cur_chapter) || (ch == (uint8_t)menu_sel);
+            bool     sel     = (ch == cur_chapter) || (ch == (int16_t)menu_sel);
             uint16_t tile_bg = sel ? sel_bg() : bg();
             tft.fillRect(x, y, tile_w, tile_h, tile_bg);
             tft.drawRect(x, y, tile_w, tile_h, dark_mode ? 0x2104 : 0xC618);
@@ -593,10 +590,13 @@ void BibleInterface::redrawChapterContent() {
 // ─────────────────────────────────────────────────────────────────────────────
 void BibleInterface::drawTransSelect() {
     tft.fillScreen(bg());
-    drawHeader("Choose Translation", false);
+    const char* title = (mode == MODE_SONGS) ? "Choose Songbook"
+                      : (mode == MODE_DICT)  ? "Choose Dictionary"
+                                             : "Choose Translation";
+    drawHeader(title, true);
     uint8_t vis = visItems();
     for (uint8_t i = 0; i < vis && (menu_scroll + i) < trans_count; i++) {
-        bool sel = (menu_scroll + i) == (uint8_t)menu_sel;
+        bool sel = (menu_scroll + i) == (int16_t)menu_sel;
         drawListRow(contentY() + i * itemH(), trans_stems[menu_scroll + i], sel);
     }
     drawScrollBar(trans_count, vis, menu_scroll);
@@ -608,11 +608,15 @@ void BibleInterface::drawTransSelect() {
 // ─────────────────────────────────────────────────────────────────────────────
 void BibleInterface::drawSectionSelect() {
     tft.fillScreen(bg());
-    drawHeader(trans_count > 0 ? trans_stems[cur_trans] : "Bible", false);
-    for (uint8_t i = 0; i < BIBLE_SEC_COUNT; i++) {
-        bool sel = (i == (uint8_t)menu_sel);
-        drawListRow(contentY() + i * itemH(), SEC_NAME_EN[i], sel);
+    drawHeader(trans_count > 0 ? trans_stems[cur_trans] : "Bible", true);
+    // Scroll-aware: Songs can have many categories (sections), so honor menu_scroll
+    // and draw a scrollbar (Bible's 4 sections always fit).
+    uint8_t vis = visItems();
+    for (uint8_t i = 0; i < vis && (menu_scroll + i) < numSecs(); i++) {
+        bool sel = (menu_scroll + i) == (int16_t)menu_sel;
+        drawListRow(contentY() + i * itemH(), secName(menu_scroll + i), sel);
     }
+    drawScrollBar(numSecs(), vis, menu_scroll);
     drawNavBar("Marks", "Settings", "Bright");
 }
 
@@ -621,13 +625,13 @@ void BibleInterface::drawSectionSelect() {
 // ─────────────────────────────────────────────────────────────────────────────
 void BibleInterface::drawBookSelect() {
     tft.fillScreen(bg());
-    drawHeader(SEC_NAME_EN[cur_sec]);
+    drawHeader(secName(cur_sec));
     uint8_t vis   = visItems();
-    uint8_t start = SEC_BOOK_START[cur_sec];
-    uint8_t count = SEC_BOOK_COUNT_[cur_sec];
+    uint16_t start = secStart(cur_sec);
+    uint16_t count = secLen(cur_sec);
     for (uint8_t i = 0; i < vis && (menu_scroll + i) < count; i++) {
-        bool sel = (menu_scroll + i) == (uint8_t)menu_sel;
-        drawListRow(contentY() + i * itemH(), BOOKS[start + menu_scroll + i].display, sel);
+        bool sel = (menu_scroll + i) == (int16_t)menu_sel;
+        drawListRow(contentY() + i * itemH(), bookDisplay(start + menu_scroll + i), sel);
     }
     drawScrollBar(count, vis, menu_scroll);
     drawNavBar("Marks", "Settings", "Bright");
@@ -638,21 +642,21 @@ void BibleInterface::drawBookSelect() {
 // ─────────────────────────────────────────────────────────────────────────────
 void BibleInterface::drawChapterSelect() {
     tft.fillScreen(bg());
-    drawHeader(BOOKS[cur_book].display);
+    drawHeader(bookDisplay(cur_book));
 
-    uint8_t  chaps    = BOOKS[cur_book].chapters;
+    uint16_t  chaps    = bookChapters(cur_book);
     uint16_t tile_w   = scrW() / 5;
     uint16_t tile_h   = 36;
     uint8_t  vis_rows = (uint8_t)(contentH() / tile_h);
 
     for (uint8_t row = 0; row < vis_rows; row++) {
         for (uint8_t col = 0; col < 5; col++) {
-            uint8_t ch = (uint8_t)((menu_scroll + row) * 5 + col + 1);
+            uint16_t ch = (uint16_t)((menu_scroll + row) * 5 + col + 1);
             if (ch > chaps) break;
 
             uint16_t x  = col * tile_w;
             uint16_t y  = contentY() + row * tile_h;
-            bool     sel = (ch == cur_chapter) || (ch == (uint8_t)menu_sel);
+            bool     sel = (ch == cur_chapter) || (ch == (int16_t)menu_sel);
 
             uint16_t tile_bg = sel ? sel_bg() : bg();
             tft.fillRect(x, y, tile_w, tile_h, tile_bg);
@@ -783,7 +787,11 @@ void BibleInterface::drawReadingLines() {
 void BibleInterface::drawReading() {
     tft.fillScreen(bg());
     char hdr[48];
-    snprintf(hdr, sizeof(hdr), "%s %d", BOOKS[cur_book].display, cur_chapter);
+    // Single-chapter books (Songs) show just the title — no redundant " 1".
+    if (bookChapters(cur_book) <= 1)
+        snprintf(hdr, sizeof(hdr), "%s", bookDisplay(cur_book));
+    else
+        snprintf(hdr, sizeof(hdr), "%s %d", bookDisplay(cur_book), cur_chapter);
     drawHeader(hdr);
     drawReadingLines();
     drawNavBar("Marks", "Settings", "+Mark");
@@ -802,7 +810,7 @@ void BibleInterface::redrawSettingsContent() {
 
     for (uint8_t i = 0; i < n; i++) {
         int16_t row_y = contentY() + (int16_t)i * itemH();
-        bool    sel   = (i == (uint8_t)menu_sel);
+        bool    sel   = (i == (int16_t)menu_sel);
 
         if (i == 2) {
             // Brightness row: "Brightness" label + [-] X/20 [+] buttons.
@@ -1081,7 +1089,7 @@ int16_t BibleInterface::touchItem(uint16_t /*x*/, uint16_t y) {
 // ─────────────────────────────────────────────────────────────────────────────
 // Input handlers
 // ─────────────────────────────────────────────────────────────────────────────
-void BibleInterface::handleListInput(uint8_t item_count) {
+void BibleInterface::handleListInput(uint16_t item_count) {
     uint16_t tx, ty;
     bool down = pollTouch(&tx, &ty);
 
@@ -1159,17 +1167,16 @@ void BibleInterface::handleListInput(uint8_t item_count) {
 
         switch (view) {
             case BV_TRANS_SELECT:
-                cur_trans = (uint8_t)menu_sel;
-                goToSection();
+                selectTranslation((uint16_t)menu_sel);
                 break;
             case BV_SECTION_SELECT:
-                goToBook((uint8_t)menu_sel);
+                goToBook((int16_t)menu_sel);
                 break;
             case BV_BOOK_SELECT:
-                goToChapter(SEC_BOOK_START[cur_sec] + (uint8_t)menu_sel);
+                goToChapter(secStart(cur_sec) + (int16_t)menu_sel);
                 break;
             case BV_CHAPTER_SELECT:
-                goToReading((uint8_t)menu_sel + 1);
+                goToReading((int16_t)menu_sel + 1);
                 break;
             default: break;
         }
@@ -1177,7 +1184,7 @@ void BibleInterface::handleListInput(uint8_t item_count) {
 }
 
 void BibleInterface::handleChapterInput() {
-    uint8_t  chaps      = BOOKS[cur_book].chapters;
+    uint16_t  chaps      = bookChapters(cur_book);
     uint16_t tile_w     = scrW() / 5;
     uint16_t tile_h     = 36;
     uint8_t  vis_rows   = (uint8_t)(contentH() / tile_h);
@@ -1212,7 +1219,7 @@ void BibleInterface::handleChapterInput() {
         if (ty >= (uint16_t)contentY() && ty < (uint16_t)(scrH() - navH())) {
             uint8_t col_p = (uint8_t)(tx / tile_w);
             uint8_t row_p = (uint8_t)((ty - contentY()) / tile_h);
-            uint8_t ch_p  = (uint8_t)((menu_scroll + row_p) * 5 + col_p + 1);
+            uint16_t ch_p  = (uint16_t)((menu_scroll + row_p) * 5 + col_p + 1);
             if (ch_p >= 1 && ch_p <= chaps) {
                 menu_sel = (int16_t)ch_p;
                 redrawChapterContent();
@@ -1261,7 +1268,7 @@ void BibleInterface::handleChapterInput() {
 
         // Navigate to the chapter highlighted on press
         if (menu_sel < 1 || menu_sel > (int16_t)chaps) return;
-        goToReading((uint8_t)menu_sel);
+        goToReading((int16_t)menu_sel);
     }
 }
 
@@ -1390,7 +1397,7 @@ void BibleInterface::handleReadingInput() {
             if (next < (int16_t)line_count) {
                 scroll_px = (float)next * (float)lineH();
                 drawReadingLines();
-            } else if (cur_chapter < BOOKS[cur_book].chapters) {
+            } else if (cur_chapter < bookChapters(cur_book)) {
                 goToReading(cur_chapter + 1);
             }
         }
@@ -1472,7 +1479,19 @@ void BibleInterface::handleSettingsInput() {
                 if (trans_count > 1) {
                     cur_trans = (cur_trans + 1) % trans_count;
                     prefs.putUChar("trans", cur_trans);
-                    cached_book = 255;
+                    cached_book = 0xFFFF; cached_chap = 0; cached_count = 0;
+                    book_idx_valid = false;
+                    if (mode != MODE_BIBLE) {
+                        // Load the newly-selected file's structure so navigation
+                        // back into it is valid.
+                        if (loadToc(trans_stems[cur_trans])) {
+                            if (cur_book >= numBooks()) cur_book = 0;
+                            cur_sec     = (numBooks() > 0) ? bookSection(cur_book) : 0;
+                            cur_chapter = 1;
+                        }
+                    } else if (cur_book >= numBooks()) {
+                        cur_book = 0;
+                    }
                 }
                 redrawSettingsContent();
                 break;
@@ -1637,11 +1656,19 @@ void BibleInterface::goToTransSelect() {
 }
 void BibleInterface::goToSection() {
     stopFling();
+    // Modes with a single section (e.g. Dictionary) skip the section list.
+    if (numSecs() <= 1) { goToBook(0); return; }
     view = BV_SECTION_SELECT;
-    // Restore scroll to show current section (4 items always fit on screen)
+    // Scroll the current section into view (Songs can have many categories).
     menu_sel    = (int16_t)cur_sec;
     menu_scroll = 0;
-    scroll_px   = 0.f;
+    if (cur_sec >= visItems()) {
+        int16_t mid   = (int16_t)cur_sec - (int16_t)(visItems() / 2);
+        int16_t max_s = (int16_t)numSecs() - (int16_t)visItems();
+        menu_scroll   = (mid > max_s) ? max_s : mid;
+        if (menu_scroll < 0) menu_scroll = 0;
+    }
+    scroll_px   = (float)menu_scroll * (float)itemH();
     needs_redraw = true;
 }
 void BibleInterface::goToBook(uint8_t sec) {
@@ -1649,12 +1676,12 @@ void BibleInterface::goToBook(uint8_t sec) {
     cur_sec = sec;
     view    = BV_BOOK_SELECT;
     // Scroll to show cur_book within this section
-    uint8_t local_idx = 0;
-    if (sec == BOOKS[cur_book].section) {
-        local_idx = cur_book - SEC_BOOK_START[sec];
+    uint16_t local_idx = 0;
+    if (sec == bookSection(cur_book)) {
+        local_idx = cur_book - secStart(sec);
     }
     menu_sel    = (int16_t)local_idx;
-    uint8_t cnt = SEC_BOOK_COUNT_[sec];
+    uint16_t cnt = secLen(sec);
     menu_scroll = 0;
     if (local_idx >= visItems()) {
         int16_t mid = (int16_t)local_idx - (int16_t)(visItems() / 2);
@@ -1665,15 +1692,18 @@ void BibleInterface::goToBook(uint8_t sec) {
     scroll_px = (float)menu_scroll * (float)itemH();
     needs_redraw = true;
 }
-void BibleInterface::goToChapter(uint8_t book) {
+void BibleInterface::goToChapter(uint16_t book) {
     stopFling();
     cur_book = book;
+    // Single-chapter books (each Song is one chapter) skip the chapter grid and
+    // open the reader directly.
+    if (bookChapters(book) <= 1) { goToReading(1); return; }
     view     = BV_CHAPTER_SELECT;
     // Scroll grid to show cur_chapter
     const uint16_t tile_h   = 36;
     uint8_t        vis_rows = (uint8_t)(contentH() / tile_h);
     int16_t        row      = (int16_t)((cur_chapter - 1) / 5);
-    int16_t        total_rows = ((int16_t)BOOKS[book].chapters + 4) / 5;
+    int16_t        total_rows = ((int16_t)bookChapters(book) + 4) / 5;
     int16_t        max_s    = total_rows - (int16_t)vis_rows;
     if (max_s < 0) max_s = 0;
     menu_scroll = row - (int16_t)(vis_rows / 2);
@@ -1686,13 +1716,13 @@ void BibleInterface::goToChapter(uint8_t book) {
 void BibleInterface::drawLoading() {
     tft.fillScreen(bg());
     char hdr[48];
-    snprintf(hdr, sizeof(hdr), "%s %d", BOOKS[cur_book].display, cur_chapter);
+    snprintf(hdr, sizeof(hdr), "%s %d", bookDisplay(cur_book), cur_chapter);
     drawHeader(hdr);
     tft.setTextColor(dim_fg(), bg());
     tft.drawCentreString("Loading...", scrW() / 2, contentY() + contentH() / 2 - 8, 2);
 }
 
-void BibleInterface::goToReading(uint8_t chapter, int16_t start_line) {
+void BibleInterface::goToReading(uint16_t chapter, int16_t start_line) {
     stopFling();
     sel_verse_first = sel_verse_last = 0;  // clear verse selection on chapter change
     cur_chapter = chapter;
@@ -1719,15 +1749,285 @@ void BibleInterface::goToBookmarks() {
     scroll_px = 0.f;
     needs_redraw = true;
 }
+// ─────────────────────────────────────────────────────────────────────────────
+// Mode-parameterized SD paths and NVS namespace
+// ─────────────────────────────────────────────────────────────────────────────
+const char* BibleInterface::basePath() const {
+    switch (mode) {
+        case MODE_SONGS: return SONGS_SD_BASE;
+        case MODE_DICT:  return DICT_SD_BASE;
+        default:         return BIBLE_SD_BASE;
+    }
+}
+const char* BibleInterface::nvsNamespace() const {
+    switch (mode) {
+        case MODE_SONGS: return "songs";
+        case MODE_DICT:  return "dict";
+        default:         return "bible";
+    }
+}
+void BibleInterface::bmPath(char* out, size_t n) const {
+    snprintf(out, n, "%s/bookmarks.txt", basePath());
+}
+void BibleInterface::srchHistPath(char* out, size_t n) const {
+    snprintf(out, n, "%s/srch_hist.txt", basePath());
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Runtime structure tables (Songs / Dictionary) — allocated from PSRAM if present
+// ─────────────────────────────────────────────────────────────────────────────
+#ifdef HAS_PSRAM
+  #define RT_MALLOC(sz) ps_malloc(sz)
+#else
+  #define RT_MALLOC(sz) malloc(sz)
+#endif
+
+void BibleInterface::freeRuntime() {
+    if (rt_books)     { free(rt_books);     rt_books     = nullptr; }
+    if (rt_secs)      { free(rt_secs);      rt_secs      = nullptr; }
+    if (book_offsets) { free(book_offsets); book_offsets = nullptr; }
+    rt_book_count = 0; rt_sec_count = 0; book_offsets_cap = 0;
+}
+
+// Load <base>/<stem>.toc into rt_books[], rt_secs[] and book_offsets[].
+//   S|<section display name>
+//   B|<code>|<display>|<chapterCount>|<sectionIndex>|<byteOffset>
+// Books must be grouped by section and contiguous (the generator guarantees this).
+bool BibleInterface::loadToc(const char* stem) {
+    freeRuntime();
+    char path[80];
+    snprintf(path, sizeof(path), "%s/%s.toc", basePath(), stem);
+
+    File f = SD.open(path);
+    if (!f) { Serial.printf("[%s] TOC missing: %s\n", nvsNamespace(), path); return false; }
+
+    // Pass 1: count rows so the tables can be sized exactly.
+    uint16_t nsec = 0, nbook = 0;
+    while (f.available()) {
+        String line = f.readStringUntil('\n');
+        if (line.length() < 2 || line[1] != '|') continue;
+        if      (line[0] == 'S') nsec++;
+        else if (line[0] == 'B') nbook++;
+    }
+    f.close();
+    if (nbook == 0) return false;
+
+    rt_secs      = (RtSec*)   RT_MALLOC(sizeof(RtSec)   * (nsec ? nsec : 1));
+    rt_books     = (RtBook*)  RT_MALLOC(sizeof(RtBook)  * nbook);
+    book_offsets = (uint32_t*)RT_MALLOC(sizeof(uint32_t)* nbook);
+    if (!rt_secs || !rt_books || !book_offsets) { freeRuntime(); return false; }
+    book_offsets_cap = nbook;
+
+    // Pass 2: fill.
+    f = SD.open(path);
+    if (!f) { freeRuntime(); return false; }
+    uint16_t si = 0, bi = 0;
+    while (f.available()) {
+        String line = f.readStringUntil('\n');
+        line.trim();
+        if (line.length() < 2 || line[1] != '|') continue;
+        if (line[0] == 'S' && si < nsec) {
+            String name = line.substring(2);
+            strncpy(rt_secs[si].name, name.c_str(), RT_SEC_NAME_LEN - 1);
+            rt_secs[si].name[RT_SEC_NAME_LEN - 1] = 0;
+            rt_secs[si].start = 0; rt_secs[si].len = 0;
+            si++;
+        } else if (line[0] == 'B' && bi < nbook) {
+            int p1 = line.indexOf('|', 2);
+            int p2 = (p1 >= 0) ? line.indexOf('|', p1 + 1) : -1;
+            int p3 = (p2 >= 0) ? line.indexOf('|', p2 + 1) : -1;
+            int p4 = (p3 >= 0) ? line.indexOf('|', p3 + 1) : -1;
+            if (p1 < 0 || p2 < 0 || p3 < 0 || p4 < 0) continue;
+            String code = line.substring(2, p1);
+            String disp = line.substring(p1 + 1, p2);
+            uint16_t chaps  = (uint16_t)line.substring(p2 + 1, p3).toInt();
+            uint16_t secidx = (uint16_t)line.substring(p3 + 1, p4).toInt();
+            uint32_t off    = (uint32_t)strtoul(line.substring(p4 + 1).c_str(), nullptr, 10);
+            strncpy(rt_books[bi].code,    code.c_str(), RT_CODE_LEN - 1); rt_books[bi].code[RT_CODE_LEN - 1] = 0;
+            strncpy(rt_books[bi].display, disp.c_str(), RT_DISP_LEN - 1); rt_books[bi].display[RT_DISP_LEN - 1] = 0;
+            rt_books[bi].chapters = chaps ? chaps : 1;
+            rt_books[bi].section  = secidx;
+            book_offsets[bi]      = off;
+            bi++;
+        }
+    }
+    f.close();
+    rt_book_count = bi;
+    rt_sec_count  = si;
+
+    // Derive section start/len from the (contiguous, section-grouped) book list.
+    for (uint16_t s = 0; s < rt_sec_count; s++) { rt_secs[s].start = 0; rt_secs[s].len = 0; }
+    for (uint16_t b = 0; b < rt_book_count; b++) {
+        uint16_t s = rt_books[b].section;
+        if (s >= rt_sec_count) continue;
+        if (rt_secs[s].len == 0) rt_secs[s].start = b;
+        rt_secs[s].len++;
+    }
+    book_idx_valid = true;   // offsets came from the TOC; no .idx scan needed
+    book_idx_trans = cur_trans;
+    Serial.printf("[%s] TOC %s: %u sections, %u books\n",
+                  nvsNamespace(), stem, rt_sec_count, rt_book_count);
+    return true;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Main menu (root) — pick Bible / Songs / Dictionary
+// ─────────────────────────────────────────────────────────────────────────────
+static const char* const MENU_LABELS[3] = { "Bible", "Songs", "Dictionary" };
+
+void BibleInterface::goToMainMenu() {
+    stopFling();
+    // Restore the menu's own appearance/namespace (board-global brightness lives here).
+    prefs.end();
+    prefs.begin("menu", false);
+    mode       = MODE_BIBLE;            // accessors unused at the menu
+    dark_mode  = prefs.getBool ("dark",   true);
+    accent_idx = prefs.getUChar("accent", 0);
+    if (accent_idx >= ACCENT_COUNT) accent_idx = 0;
+    font_num   = 2;
+    // Keep the current backlight level (avoids a brightness flash when returning
+    // from a mode); each mode still applies its own brightness on entry.
+    freeRuntime();
+    cached_book = 0xFFFF; cached_chap = 0; cached_count = 0;
+    book_idx_valid = false;
+    view = BV_MAIN_MENU;
+    menu_sel = 0; menu_scroll = 0; scroll_px = 0.f;
+    needs_redraw = true;
+}
+
+void BibleInterface::drawMainMenu() {
+    tft.fillScreen(bg());
+    drawHeader("Marauder Library", false);
+    const int16_t margin = 16;
+    const int16_t gap    = 14;
+    int16_t top   = (int16_t)contentY() + 12;
+    int16_t avail = (int16_t)scrH() - top - 12;
+    int16_t bh    = (avail - gap * 2) / 3;
+    for (uint8_t i = 0; i < 3; i++) {
+        int16_t y = top + i * (bh + gap);
+        tft.fillRoundRect(margin, y, scrW() - 2 * margin, bh, 12, sel_bg());
+        tft.drawRoundRect(margin, y, scrW() - 2 * margin, bh, 12, dim_fg());
+        tft.setTextColor(fg(), sel_bg());
+        tft.drawCentreString(MENU_LABELS[i], scrW() / 2, y + (bh - 26) / 2, 4);
+    }
+}
+
+void BibleInterface::handleMainMenuInput() {
+    uint16_t tx, ty;
+    bool down = pollTouch(&tx, &ty);
+    if (down && !touch_was_down) {
+        touch_was_down = true;
+        touch_down_x = tx; touch_down_y = ty;
+        return;
+    }
+    if (!down && touch_was_down) {
+        touch_was_down = false;
+        const int16_t margin = 16;
+        const int16_t gap    = 14;
+        int16_t top   = (int16_t)contentY() + 12;
+        int16_t avail = (int16_t)scrH() - top - 12;
+        int16_t bh    = (avail - gap * 2) / 3;
+        for (uint8_t i = 0; i < 3; i++) {
+            int16_t y = top + i * (bh + gap);
+            if ((int16_t)touch_down_y >= y && (int16_t)touch_down_y < y + bh &&
+                (int16_t)touch_down_x >= margin && (int16_t)touch_down_x < (int16_t)scrW() - margin) {
+                enterMode((ContentMode)i);
+                return;
+            }
+        }
+        // Tap elsewhere (e.g. dismissing a "no files" message) — repaint the menu.
+        needs_redraw = true;
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Mode switching
+// ─────────────────────────────────────────────────────────────────────────────
+void BibleInterface::enterMode(ContentMode m) {
+    prefs.end();
+    mode = m;
+    freeRuntime();
+    cached_book = 0xFFFF; cached_chap = 0; cached_count = 0;
+    book_idx_valid = false;
+
+    prefs.begin(nvsNamespace(), false);
+    loadState();                          // per-mode font/dark/accent/position/search
+    blSet(prefs.getUChar("bright", 19));  // per-mode brightness (no re-attach)
+    loadBookmarks();
+    loadSearchHistory();
+    scanTranslations();
+
+    if (trans_count == 0) {
+        tft.fillScreen(bg());
+        drawHeader("Marauder Library", false);
+        tft.setTextColor(TFT_RED, bg());
+        char msg[48];
+        snprintf(msg, sizeof(msg), "No %s files on SD", MENU_LABELS[m]);
+        tft.drawCentreString(msg, scrW() / 2, scrH() / 2 - 18, 2);
+        char where[48];
+        snprintf(where, sizeof(where), "Copy .xml to %s/", basePath());
+        tft.setTextColor(dim_fg(), bg());
+        tft.drawCentreString(where, scrW() / 2, scrH() / 2 + 6, 2);
+        tft.drawCentreString("Tap to go back", scrW() / 2, scrH() / 2 + 30, 2);
+        // Stay on the menu state so a tap returns; do not auto-redraw over the message.
+        mode = MODE_BIBLE;
+        view = BV_MAIN_MENU;
+        needs_redraw = false;
+        return;
+    }
+    if (cur_trans >= trans_count) cur_trans = 0;
+
+    // Multiple translations → show the picker; otherwise open the single one.
+    if (trans_count > 1) {
+        if (mode != MODE_BIBLE) loadToc(trans_stems[cur_trans]);  // so cur_book clamps correctly
+        goToTransSelect();
+    } else {
+        selectTranslation(cur_trans);
+    }
+}
+
+void BibleInterface::selectTranslation(uint16_t idx) {
+    if (idx >= trans_count) idx = 0;
+    cur_trans = (uint8_t)idx;
+    cached_book = 0xFFFF; cached_chap = 0; cached_count = 0;
+    book_idx_valid = false;
+
+    if (mode != MODE_BIBLE) {
+        if (!loadToc(trans_stems[cur_trans])) { goToMainMenu(); return; }
+        if (cur_book >= numBooks()) cur_book = 0;
+        cur_sec = (numBooks() > 0) ? bookSection(cur_book) : 0;
+        if (cur_chapter == 0 || cur_chapter > bookChapters(cur_book)) cur_chapter = 1;
+    } else {
+        // Bible: ensure the byte-offset buffer exists (filled lazily from the .idx
+        // file inside cacheChapter). loadToc() handles this for Songs/Dict.
+        if (!book_offsets || book_offsets_cap < BIBLE_BOOK_COUNT) {
+            if (book_offsets) free(book_offsets);
+            book_offsets     = (uint32_t*)RT_MALLOC(sizeof(uint32_t) * BIBLE_BOOK_COUNT);
+            book_offsets_cap = book_offsets ? BIBLE_BOOK_COUNT : 0;
+        }
+        if (book_offsets) memset(book_offsets, 0, sizeof(uint32_t) * BIBLE_BOOK_COUNT);
+        if (cur_book >= numBooks()) cur_book = 0;
+        cur_sec = bookSection(cur_book);
+    }
+    saveState();
+    goToSection();
+}
+
 void BibleInterface::goBack() {
     stopFling();
     switch (view) {
-        case BV_TRANS_SELECT:    /* already top */ break;
+        case BV_MAIN_MENU:       /* already root */ break;
+        case BV_TRANS_SELECT:    goToMainMenu(); break;
         case BV_SECTION_SELECT:
             if (trans_count > 1) goToTransSelect();
+            else                 goToMainMenu();
             break;
-        case BV_BOOK_SELECT:     goToSection(); break;
-        case BV_CHAPTER_SELECT:  goToBook(BOOKS[cur_book].section); break;
+        case BV_BOOK_SELECT:
+            if      (numSecs() > 1)    goToSection();
+            else if (trans_count > 1)  goToTransSelect();
+            else                       goToMainMenu();
+            break;
+        case BV_CHAPTER_SELECT:  goToBook(bookSection(cur_book)); break;
         case BV_READING:
             if (reading_from_search) {
                 reading_from_search = false;
@@ -1735,6 +2035,10 @@ void BibleInterface::goBack() {
                 view      = BV_SEARCH_RESULTS;
                 scroll_px = (float)menu_scroll * (float)srchH();
                 needs_redraw = true;
+            } else if (bookChapters(cur_book) <= 1) {
+                // Single-chapter book (Song): chapter grid is skipped, so go to
+                // the book (song) list rather than back into the reader.
+                goToBook(bookSection(cur_book));
             } else {
                 goToChapter(cur_book);
             }
@@ -1745,11 +2049,10 @@ void BibleInterface::goBack() {
             if (cached_count > 0) {
                 view = BV_READING;
                 scroll_px = (float)read_line * (float)lineH();
+                needs_redraw = true;
             } else {
-                view = BV_SECTION_SELECT;
-                scroll_px = 0.f;
+                goToSection();
             }
-            needs_redraw = true;
             break;
         case BV_SEARCH_RESULTS:
             goToSearchInput();
@@ -1759,11 +2062,10 @@ void BibleInterface::goBack() {
             if (cached_count > 0) {
                 view = BV_READING;
                 scroll_px = (float)read_line * (float)lineH();
+                needs_redraw = true;
             } else {
-                view = BV_SECTION_SELECT;
-                scroll_px = 0.f;
+                goToSection();
             }
-            needs_redraw = true;
             break;
     }
 }
@@ -1773,21 +2075,23 @@ void BibleInterface::addBookmarkCurrent() {
     bm.chapter     = cur_chapter;
     bm.verse_first = sel_verse_first;
     bm.verse_last  = sel_verse_last;
+    bm.trans       = cur_trans;   // used by Songs/Dict (book index is per-file)
 
     if (sel_verse_first > 0) {
         // Verse / range bookmark
         if (sel_verse_first == sel_verse_last)
             snprintf(bm.label, BIBLE_BM_LABEL_LEN, "%s %d:%d",
-                     BOOKS[cur_book].display, cur_chapter, sel_verse_first);
+                     bookDisplay(cur_book), cur_chapter, sel_verse_first);
         else
             snprintf(bm.label, BIBLE_BM_LABEL_LEN, "%s %d:%d-%d",
-                     BOOKS[cur_book].display, cur_chapter,
+                     bookDisplay(cur_book), cur_chapter,
                      sel_verse_first, sel_verse_last);
         // Reject exact duplicates (same book/chapter/verse range)
         for (uint8_t i = 0; i < bm_count; i++) {
             if (bookmarks[i].book == cur_book && bookmarks[i].chapter == cur_chapter
                     && bookmarks[i].verse_first == sel_verse_first
-                    && bookmarks[i].verse_last  == sel_verse_last) {
+                    && bookmarks[i].verse_last  == sel_verse_last
+                    && (mode == MODE_BIBLE || bookmarks[i].trans == cur_trans)) {
                 tft.fillRect(scrW()/2, scrH() - navH() - 18, scrW()/2, 16, (uint16_t)0xFD20);
                 tft.setTextColor(TFT_BLACK, (uint16_t)0xFD20);
                 tft.drawCentreString("Already saved", 3*scrW()/4, scrH() - navH() - 18, 1);
@@ -1799,10 +2103,11 @@ void BibleInterface::addBookmarkCurrent() {
     } else {
         // Whole-chapter bookmark
         snprintf(bm.label, BIBLE_BM_LABEL_LEN, "%s %d",
-                 BOOKS[cur_book].display, cur_chapter);
+                 bookDisplay(cur_book), cur_chapter);
         for (uint8_t i = 0; i < bm_count; i++) {
             if (bookmarks[i].book == cur_book && bookmarks[i].chapter == cur_chapter
-                    && bookmarks[i].verse_first == 0) {
+                    && bookmarks[i].verse_first == 0
+                    && (mode == MODE_BIBLE || bookmarks[i].trans == cur_trans)) {
                 tft.fillRect(scrW()/2, scrH() - navH() - 18, scrW()/2, 16, (uint16_t)0xFD20);
                 tft.setTextColor(TFT_BLACK, (uint16_t)0xFD20);
                 tft.drawCentreString("Already saved", 3*scrW()/4, scrH() - navH() - 18, 1);
@@ -1828,9 +2133,17 @@ void BibleInterface::addBookmarkCurrent() {
     needs_redraw = true;
 }
 void BibleInterface::jumpToBookmark(uint8_t bm_idx) {
+    // Songs/Dict bookmarks are translation-scoped — switch file and reload its
+    // structure if the bookmark belongs to a different translation than the one open.
+    if (mode != MODE_BIBLE && bookmarks[bm_idx].trans != cur_trans &&
+        bookmarks[bm_idx].trans < trans_count) {
+        cur_trans = bookmarks[bm_idx].trans;
+        if (!loadToc(trans_stems[cur_trans])) { goToMainMenu(); return; }
+    }
     cur_book    = bookmarks[bm_idx].book;
+    if (cur_book >= numBooks()) { goToSection(); return; }
     cur_chapter = bookmarks[bm_idx].chapter;
-    cur_sec     = BOOKS[cur_book].section;
+    cur_sec     = bookSection(cur_book);
     goToReading(cur_chapter, 0);  // builds lines[], sets scroll_px=0
 
     // If it's a verse bookmark, scroll to the first selected verse
@@ -1895,10 +2208,10 @@ void BibleInterface::updateFling(uint32_t now) {
             max_px = 0.f;   // section list always fits, no fling needed
             break;
         case BV_BOOK_SELECT:
-            max_px = (float)max(0, (int)SEC_BOOK_COUNT_[cur_sec] - (int)visItems()) * (float)itemH();
+            max_px = (float)max(0, (int)secLen(cur_sec) - (int)visItems()) * (float)itemH();
             break;
         case BV_CHAPTER_SELECT: {
-            uint8_t  chaps      = BOOKS[cur_book].chapters;
+            uint16_t  chaps      = bookChapters(cur_book);
             uint8_t  tile_h     = 36;
             uint8_t  vis_rows   = (uint8_t)(contentH() / tile_h);
             int16_t  total_rows = ((int16_t)chaps + 4) / 5;
@@ -1940,8 +2253,8 @@ void BibleInterface::updateFling(uint32_t now) {
             menu_scroll = (int16_t)(scroll_px / (float)itemH());
             redrawListContent(
                 view == BV_TRANS_SELECT   ? trans_count :
-                view == BV_SECTION_SELECT ? BIBLE_SEC_COUNT :
-                                            SEC_BOOK_COUNT_[cur_sec]);
+                view == BV_SECTION_SELECT ? numSecs() :
+                                            secLen(cur_sec));
             break;
         case BV_CHAPTER_SELECT:
             menu_scroll = (int16_t)(scroll_px / 36.f);
@@ -2126,19 +2439,18 @@ bool BibleInterface::xmlGetAttr(const char* tag, const char* attr, char* out, si
     return (n > 0);
 }
 
-bool BibleInterface::cacheChapter(uint8_t book, uint8_t chapter) {
+bool BibleInterface::cacheChapter(uint16_t book, uint16_t chapter) {
     if (cached_book == book && cached_chap == chapter) return (cached_count > 0);
     cached_count = 0;
     cached_book  = book;
     cached_chap  = chapter;
 
-    if (trans_count == 0) return false;
+    if (trans_count == 0 || book >= numBooks()) return false;
 
     // ── Book byte-offset index ─────────────────────────────────────────────
-    // On first access or when the translation changes, load (or build+save)
-    // the .idx file so we can seek directly to this book instead of scanning
-    // the whole XML from byte 0 every time.
-    if (!book_idx_valid || book_idx_trans != cur_trans) {
+    // Bible: load (or build+save) the .idx so we can seek directly to a book.
+    // Songs/Dict: book_offsets[] is already filled by loadToc() (no .idx scan).
+    if (mode == MODE_BIBLE && (!book_idx_valid || book_idx_trans != cur_trans)) {
         if (!loadBookIndex(trans_stems[cur_trans])) {
             buildBookIndex(trans_stems[cur_trans]);
             saveBookIndex(trans_stems[cur_trans]);
@@ -2149,7 +2461,7 @@ bool BibleInterface::cacheChapter(uint8_t book, uint8_t chapter) {
 
     // Build file path: /bible/<stem>.xml
     char path[64];
-    snprintf(path, sizeof(path), "/bible/%s.xml", trans_stems[cur_trans]);
+    snprintf(path, sizeof(path), "%s/%s.xml", basePath(), trans_stems[cur_trans]);
 
     File f = SD.open(path);
     if (!f) {
@@ -2164,12 +2476,12 @@ bool BibleInterface::cacheChapter(uint8_t book, uint8_t chapter) {
     // Build the osisID prefix we are looking for: "Book.Chapter."
     // e.g. "Gen.1." for Genesis chapter 1
     char prefix[32];
-    snprintf(prefix, sizeof(prefix), "%s.%d.", BOOKS[book].osis_code, chapter);
+    snprintf(prefix, sizeof(prefix), "%s.%d.", bookCode(book), chapter);
     size_t prefix_len = strlen(prefix);
 
     // Build the osisID prefix for the NEXT chapter so we know when to stop
     char next_prefix[32];
-    snprintf(next_prefix, sizeof(next_prefix), "%s.%d.", BOOKS[book].osis_code, chapter + 1);
+    snprintf(next_prefix, sizeof(next_prefix), "%s.%d.", bookCode(book), chapter + 1);
 
     XmlState s;
     memset(&s, 0, sizeof(s));
@@ -2240,8 +2552,12 @@ bool BibleInterface::cacheChapter(uint8_t book, uint8_t chapter) {
                             } else if (strncmp(osis_id, next_prefix, strlen(next_prefix)) == 0) {
                                 // We've gone past our chapter — stop
                                 done = true;
-                            } else if (s.in_verse) {
-                                // Different verse — shouldn't happen inside our verse
+                            } else if (cached_count > 0) {
+                                // A verse from a different book/chapter appeared after
+                                // we already collected ours — we're done. (Verses are
+                                // contiguous, so this is the safe stop for the last
+                                // chapter of a book and for single-chapter songs.)
+                                done = true;
                             }
                         }
                     } else if (s.in_verse) {
@@ -2289,7 +2605,7 @@ bool BibleInterface::cacheChapter(uint8_t book, uint8_t chapter) {
 
     f.close();
     Serial.printf("[Bible] Cached %d verses for %s ch %d\n",
-                  cached_count, BOOKS[book].display, chapter);
+                  cached_count, bookDisplay(book), chapter);
     return (cached_count > 0);
 }
 
@@ -2334,13 +2650,15 @@ void BibleInterface::addWrappedLine(uint8_t verse_num, const char* text,
         }
         is_first_line = false;
 
-        // Fill the line word by word
+        // Fill the line word by word.  A '\n' in the text forces a line break
+        // (used by Songs so stanza line structure is preserved).
+        bool forced_nl = false;
         char tmp[BIBLE_LINE_BUF];
         while (*p) {
-            // Advance to end of next word
+            // Advance to end of next word (stop at space or newline)
             const char* wp = p;
-            while (*wp && *wp != ' ') wp++;
-            // Include trailing space if present
+            while (*wp && *wp != ' ' && *wp != '\n') wp++;
+            // Include trailing space if present (newline is not stored)
             int wlen = (int)(wp - p) + (*wp == ' ' ? 1 : 0);
 
             // Test fit
@@ -2364,14 +2682,16 @@ void BibleInterface::addWrappedLine(uint8_t verse_num, const char* text,
             memcpy(out, tmp, tmp_len + 1);
             out_len = tmp_len;
             p = wp;
-            if (*p == ' ') p++;
+            if (*p == ' ') { p++; }
+            else if (*p == '\n') { p++; forced_nl = true; break; }  // explicit break
         }
 
         // Nothing fit on this line (single word wider than line_max).
         // Detect: continuation line with nothing added (out_len==0), OR verse-first
         // line with only the "^N|" prefix and no content added.
+        // Skipped after a forced newline break (an intentionally short/blank line).
         int prefix_len = (out[0] == '^') ? (int)(strchr(out, '|') - out + 1) : 0;
-        if (out_len <= prefix_len) {
+        if (!forced_nl && out_len <= prefix_len) {
             // Force-add characters until the pixel budget is exhausted.
             // Preserve any existing prefix in out[0..prefix_len-1].
             char tmp2[BIBLE_LINE_BUF];
@@ -2401,8 +2721,8 @@ void BibleInterface::addWrappedLine(uint8_t verse_num, const char* text,
 // Persistence
 // ─────────────────────────────────────────────────────────────────────────────
 void BibleInterface::saveState() {
-    prefs.putUChar("book",      cur_book);
-    prefs.putUChar("chap",      cur_chapter);
+    prefs.putUShort("book",     cur_book);
+    prefs.putUShort("chap",     cur_chapter);
     prefs.putUChar("trans",     cur_trans);
     prefs.putUChar("font",      font_num);
     prefs.putBool ("dark",      dark_mode);
@@ -2413,8 +2733,8 @@ void BibleInterface::saveState() {
 }
 
 void BibleInterface::loadState() {
-    cur_book          = prefs.getUChar("book",      0);
-    cur_chapter       = prefs.getUChar("chap",      1);
+    cur_book          = prefs.getUShort("book",     0);
+    cur_chapter       = prefs.getUShort("chap",     1);
     cur_trans         = prefs.getUChar("trans",     0);
     font_num          = prefs.getUChar("font",      2);
     dark_mode         = prefs.getBool ("dark",      true);
@@ -2422,43 +2742,69 @@ void BibleInterface::loadState() {
     srch_partial_match = prefs.getBool ("srch_part", true);
     srch_ignore_punct  = prefs.getBool ("srch_pnct", true);
     srch_scope         = prefs.getUChar("srch_scp",  0);
-    if (cur_book   >= BIBLE_BOOK_COUNT) cur_book   = 0;
+    if (mode == MODE_BIBLE && cur_book >= BIBLE_BOOK_COUNT) cur_book = 0;
     if (cur_chapter == 0)               cur_chapter = 1;
     if (cur_trans  >= BIBLE_MAX_TRANS)  cur_trans  = 0;
     if (font_num != 1 && font_num != 2 && font_num != 4) font_num = 2;
     if (accent_idx >= ACCENT_COUNT)     accent_idx = 0;
     if (srch_scope >= 3)                srch_scope  = 0;
-    // Derive section from book so navigation back shows correct highlight
-    cur_sec = BOOKS[cur_book].section;
+    // Derive section from book so navigation back shows correct highlight.
+    // For Songs/Dict the runtime table is not loaded yet here — selectTranslation()
+    // recomputes cur_sec after loadToc().
+    cur_sec = (mode == MODE_BIBLE) ? bookSection(cur_book) : 0;
 }
 
 void BibleInterface::saveBookmarks() {
-    // Format: "bookIdx chapter verse_first verse_last label\n"
-    File f = SD.open(BIBLE_BM_FILE, FILE_WRITE);
+    char path[64];
+    bmPath(path, sizeof(path));
+    File f = SD.open(path, FILE_WRITE);
     if (!f) return;
+    // Bible:        "book chapter verse_first verse_last label"   (canon-global book)
+    // Songs/Dict:   "T<trans> book chapter verse_first verse_last label"
+    //   The leading "T<n>" token marks a translation-scoped bookmark.
     for (uint8_t i = 0; i < bm_count; i++) {
-        f.printf("%d %d %d %d %s\n",
-                 bookmarks[i].book, bookmarks[i].chapter,
-                 bookmarks[i].verse_first, bookmarks[i].verse_last,
-                 bookmarks[i].label);
+        if (mode == MODE_BIBLE) {
+            f.printf("%d %d %d %d %s\n",
+                     bookmarks[i].book, bookmarks[i].chapter,
+                     bookmarks[i].verse_first, bookmarks[i].verse_last,
+                     bookmarks[i].label);
+        } else {
+            f.printf("T%d %d %d %d %d %s\n",
+                     bookmarks[i].trans, bookmarks[i].book, bookmarks[i].chapter,
+                     bookmarks[i].verse_first, bookmarks[i].verse_last,
+                     bookmarks[i].label);
+        }
     }
     f.close();
 }
 
 void BibleInterface::loadBookmarks() {
     bm_count = 0;
-    File f = SD.open(BIBLE_BM_FILE);
+    char path[64];
+    bmPath(path, sizeof(path));
+    File f = SD.open(path);
     if (!f) return;
     while (f.available() && bm_count < BIBLE_MAX_BM) {
         String line = f.readStringUntil('\n');
         line.trim();
         if (line.length() == 0) continue;
+
+        // Songs/Dict lines start with a "T<trans>" token; strip and remember it.
+        uint8_t bm_trans = 0;
+        if (line[0] == 'T' && line.length() > 1 && isdigit((unsigned char)line[1])) {
+            int sp = line.indexOf(' ');
+            if (sp < 0) continue;
+            bm_trans = (uint8_t)line.substring(1, sp).toInt();
+            line = line.substring(sp + 1);
+            line.trim();
+        }
+
         int s1 = line.indexOf(' ');
         int s2 = (s1 >= 0) ? line.indexOf(' ', s1 + 1) : -1;
         if (s1 < 0 || s2 < 0) continue;
-        uint8_t book = (uint8_t)line.substring(0, s1).toInt();
-        uint8_t chap = (uint8_t)line.substring(s1 + 1, s2).toInt();
-        if (book >= BIBLE_BOOK_COUNT || chap == 0) continue;
+        uint16_t book = (uint16_t)line.substring(0, s1).toInt();
+        uint16_t chap = (uint16_t)line.substring(s1 + 1, s2).toInt();
+        if (chap == 0) continue;
 
         // Detect format: new has two more integer tokens before the label.
         // Check tokens 3 and 4 — if both are all-digit, it is new format.
@@ -2489,6 +2835,7 @@ void BibleInterface::loadBookmarks() {
         bookmarks[bm_count].chapter     = chap;
         bookmarks[bm_count].verse_first = v1;
         bookmarks[bm_count].verse_last  = v2;
+        bookmarks[bm_count].trans       = bm_trans;
         strncpy(bookmarks[bm_count].label, label.c_str(), BIBLE_BM_LABEL_LEN - 1);
         bookmarks[bm_count].label[BIBLE_BM_LABEL_LEN - 1] = 0;
         bm_count++;
@@ -2498,7 +2845,7 @@ void BibleInterface::loadBookmarks() {
 
 void BibleInterface::scanTranslations() {
     trans_count = 0;
-    File root = SD.open(BIBLE_SD_BASE);
+    File root = SD.open(basePath());
     if (!root) {
         Serial.println(F("[Bible] /bible/ not found"));
         return;
@@ -2548,7 +2895,7 @@ void BibleInterface::scanTranslations() {
 
 bool BibleInterface::loadBookIndex(const char* stem) {
     char idx_path[64];
-    snprintf(idx_path, sizeof(idx_path), "/bible/%s.idx", stem);
+    snprintf(idx_path, sizeof(idx_path), "%s/%s.idx", basePath(), stem);
     File fi = SD.open(idx_path);
     if (!fi) return false;
 
@@ -2564,7 +2911,7 @@ bool BibleInterface::loadBookIndex(const char* stem) {
 
     // Compare stored XML size against the actual file — detects replaced translations
     char xml_path[64];
-    snprintf(xml_path, sizeof(xml_path), "/bible/%s.xml", stem);
+    snprintf(xml_path, sizeof(xml_path), "%s/%s.xml", basePath(), stem);
     File fx = SD.open(xml_path);
     if (!fx) { fi.close(); return false; }
     uint32_t actual_xml = (uint32_t)fx.size();
@@ -2581,7 +2928,7 @@ bool BibleInterface::loadBookIndex(const char* stem) {
 // each book.  Displays a "Building index..." screen while working.
 bool BibleInterface::buildBookIndex(const char* stem) {
     char path[64];
-    snprintf(path, sizeof(path), "/bible/%s.xml", stem);
+    snprintf(path, sizeof(path), "%s/%s.xml", basePath(), stem);
     File f = SD.open(path);
     if (!f) return false;
 
@@ -2592,7 +2939,7 @@ bool BibleInterface::buildBookIndex(const char* stem) {
     tft.setTextColor(dim_fg(), bg());
     tft.drawCentreString("(first run only)", scrW() / 2, scrH() / 2 + 14, 2);
 
-    memset(book_offsets, 0, sizeof(book_offsets));
+    if (book_offsets) memset(book_offsets, 0, (size_t)book_offsets_cap * sizeof(uint32_t));
 
     XmlState s;
     memset(&s, 0, sizeof(s));
@@ -2636,12 +2983,12 @@ bool BibleInterface::buildBookIndex(const char* stem) {
                             int code_len = (int)(dot - osis_id);
                             for (uint8_t b = 0; b < BIBLE_BOOK_COUNT; b++) {
                                 if (book_offsets[b] == 0 &&
-                                    (int)strlen(BOOKS[b].osis_code) == code_len &&
-                                    strncmp(osis_id, BOOKS[b].osis_code, code_len) == 0) {
+                                    (int)strlen(bookCode(b)) == code_len &&
+                                    strncmp(osis_id, bookCode(b), code_len) == 0) {
                                     book_offsets[b] = tag_start;
                                     found++;
                                     Serial.printf("[Bible] idx: %s @ %u\n",
-                                                  BOOKS[b].osis_code, tag_start);
+                                                  bookCode(b), tag_start);
                                     break;
                                 }
                             }
@@ -2664,14 +3011,14 @@ bool BibleInterface::buildBookIndex(const char* stem) {
 void BibleInterface::saveBookIndex(const char* stem) {
     // Embed the current XML file size so we can detect if it gets replaced
     char xml_path[64];
-    snprintf(xml_path, sizeof(xml_path), "/bible/%s.xml", stem);
+    snprintf(xml_path, sizeof(xml_path), "%s/%s.xml", basePath(), stem);
     File fx = SD.open(xml_path);
     if (!fx) return;
     uint32_t xml_size = (uint32_t)fx.size();
     fx.close();
 
     char idx_path[64];
-    snprintf(idx_path, sizeof(idx_path), "/bible/%s.idx", stem);
+    snprintf(idx_path, sizeof(idx_path), "%s/%s.idx", basePath(), stem);
     SD.remove(idx_path);   // overwrite any stale index
     File fo = SD.open(idx_path, FILE_WRITE);
     if (!fo) return;
@@ -2861,7 +3208,7 @@ void BibleInterface::drawSearchResultRow(int16_t y_px, uint16_t idx, bool sel) {
         BibleSearchResult& r = search_results[idx];
         char ref[40];
         snprintf(ref, sizeof(ref), "%s %d:%d",
-                 BOOKS[r.book].display, (int)r.chapter, (int)r.verse);
+                 bookDisplay(r.book), (int)r.chapter, (int)r.verse);
         tft.setTextColor(fg(), bg_col);
         tft.setTextDatum(TL_DATUM);
         tft.drawString(ref, PADDING, y_px + 3, 2);
@@ -3336,7 +3683,7 @@ void BibleInterface::jumpToSearchResult(uint16_t idx) {
     reading_from_search = true;
     cur_book    = r.book;
     cur_chapter = r.chapter;
-    cur_sec     = BOOKS[cur_book].section;
+    cur_sec     = bookSection(cur_book);
 
     drawLoading();
     view = BV_READING;
@@ -3364,19 +3711,19 @@ void BibleInterface::jumpToSearchResult(uint16_t idx) {
 // Search — streaming XML full-Bible search with progress bar
 // ─────────────────────────────────────────────────────────────────────────────
 bool BibleInterface::parseOsisID(const char* osisID,
-                                  uint8_t& book_out,
-                                  uint8_t& chap_out,
+                                  uint16_t& book_out,
+                                  uint16_t& chap_out,
                                   uint8_t& verse_out) {
     const char* dot1 = strchr(osisID, '.');
     if (!dot1) return false;
     const char* dot2 = strchr(dot1 + 1, '.');
     if (!dot2) return false;
     int code_len = (int)(dot1 - osisID);
-    for (uint8_t b = 0; b < BIBLE_BOOK_COUNT; b++) {
-        if ((int)strlen(BOOKS[b].osis_code) == code_len &&
-            strncmp(osisID, BOOKS[b].osis_code, code_len) == 0) {
+    for (uint16_t b = 0; b < numBooks(); b++) {
+        if ((int)strlen(bookCode(b)) == code_len &&
+            strncmp(osisID, bookCode(b), code_len) == 0) {
             book_out  = b;
-            chap_out  = (uint8_t)atoi(dot1 + 1);
+            chap_out  = (uint16_t)atoi(dot1 + 1);
             verse_out = (uint8_t)atoi(dot2 + 1);
             return true;
         }
@@ -3495,7 +3842,7 @@ bool BibleInterface::searchBible(const char* query) {
     tft.drawCentreString("Cancel", (int16_t)(scrW() / 2), cbtn_y + (CBTN_H - 8) / 2, 1);
 
     char path[64];
-    snprintf(path, sizeof(path), "/bible/%s.xml", trans_stems[cur_trans]);
+    snprintf(path, sizeof(path), "%s/%s.xml", basePath(), trans_stems[cur_trans]);
     File f = SD.open(path);
     if (!f) return false;
 
@@ -3513,7 +3860,8 @@ bool BibleInterface::searchBible(const char* query) {
     bool in_note      = false;
     char vtext[BIBLE_VERSE_BUF];
     int  vtext_len    = 0;
-    uint8_t vs_book   = 0, vs_chap = 0, vs_verse = 0;
+    uint16_t vs_book  = 0, vs_chap = 0;
+    uint8_t  vs_verse = 0;
     char c;
 
     while (xmlNextByte(s, c)) {
@@ -3560,12 +3908,13 @@ bool BibleInterface::searchBible(const char* query) {
                         (tname[5] == ' ' || tname[5] == '\t' || tname[5] == 0)) {
                         char osis_id[64] = {0};
                         if (xmlGetAttr(tag_buf, "osisID", osis_id, sizeof(osis_id))) {
-                            uint8_t bk = 0, ch = 0, vs = 0;
+                            uint16_t bk = 0, ch = 0;
+                            uint8_t  vs = 0;
                             if (parseOsisID(osis_id, bk, ch, vs)) {
                                 // Scope filter: skip verses outside selected scope
                                 bool in_scope = true;
                                 if (srch_scope == 1)
-                                    in_scope = (BOOKS[bk].section == cur_sec);
+                                    in_scope = (bookSection(bk) == cur_sec);
                                 else if (srch_scope == 2)
                                     in_scope = (bk == cur_book);
                                 if (in_scope) {
@@ -3665,8 +4014,10 @@ void BibleInterface::addToSearchHistory(const char* query) {
 }
 
 void BibleInterface::saveSearchHistory() {
-    SD.remove(BIBLE_SRCH_HIST_FILE);
-    File f = SD.open(BIBLE_SRCH_HIST_FILE, FILE_WRITE);
+    char path[64];
+    srchHistPath(path, sizeof(path));
+    SD.remove(path);
+    File f = SD.open(path, FILE_WRITE);
     if (!f) return;
     for (uint8_t i = 0; i < search_hist_count; i++) {
         f.print(search_hist[i]);
@@ -3677,7 +4028,9 @@ void BibleInterface::saveSearchHistory() {
 
 void BibleInterface::loadSearchHistory() {
     search_hist_count = 0;
-    File f = SD.open(BIBLE_SRCH_HIST_FILE);
+    char path[64];
+    srchHistPath(path, sizeof(path));
+    File f = SD.open(path);
     if (!f) return;
     while (f.available() && search_hist_count < BIBLE_SEARCH_HIST_MAX) {
         String line = f.readStringUntil('\n');
