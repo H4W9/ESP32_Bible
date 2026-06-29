@@ -48,25 +48,25 @@ python -m pip install openpyxl
 ```
 
 ```cmd
-:: 1) Songs  (reads SngData/SngBooks/SngCategory.xlsx in this folder)  -> songs_out\
-python generate_songs_xml.py --out songs_out
+:: 1) Songs  (reads SngData/SngBooks/SngCategory.xlsx in this folder)  -> songs\
+python generate_songs_xml.py --out songs
 ```
 
 ```cmd
-:: 2) Dictionary from dict.cc export, both directions  -> dict_out\
-python generate_dict_xml.py dictcc "cngfdsffcc-206176115145-799o68.txt" --name DE-EN --bidirectional --reverse-name EN-DE --out dict_out
+:: 2) Dictionary from dict.cc export, both directions  -> dictionary\
+python generate_dict_xml.py dictcc "cngfdsffcc-206176115145-799o68.txt" --name DE-EN --bidirectional --reverse-name EN-DE --out dictionary
 ```
 
 ```cmd
-:: 3) Dictionary from Wiktionary (Kaikki) dumps  -> dict_out\   (big/slow: ~1 GB DE, ~3 GB EN)
-python generate_dict_xml.py wiktionary "kaikki.org-dictionary-German.jsonl"  --lang de --name DE --out dict_out
-python generate_dict_xml.py wiktionary "kaikki.org-dictionary-English.jsonl" --lang en --name EN --out dict_out
+:: 3) Dictionary from Wiktionary (Kaikki) dumps  -> dictionary\   (big/slow: ~1 GB DE, ~3 GB EN)
+python generate_dict_xml.py wiktionary "kaikki.org-dictionary-German.jsonl"  --lang de --name DE --out dictionary
+python generate_dict_xml.py wiktionary "kaikki.org-dictionary-English.jsonl" --lang en --name EN --out dictionary
 ```
 
 ```cmd
 :: 4) Copy to the SD card (replace E: with your card's drive letter)
-xcopy /Y "songs_out\*" "E:\songs\"
-xcopy /Y "dict_out\*"  "E:\dictionary\"
+xcopy /Y "songs\*" "E:\songs\"
+xcopy /Y "dictionary\*"  "E:\dictionary\"
 ```
 
 > If a dict.cc export is still a `.zip`, extract it first (Windows has tar built in):

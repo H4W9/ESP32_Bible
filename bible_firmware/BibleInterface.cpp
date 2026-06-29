@@ -293,7 +293,9 @@ BibleInterface::BibleInterface()
       mode(MODE_BIBLE), rt_books(nullptr), rt_book_count(0),
       rt_secs(nullptr), rt_sec_count(0), rt_pages(nullptr), rt_page_count(0), rt_pages_book(0xFFFF),
       view(BV_MAIN_MENU), dark_mode(true), theme_idx(0), font_num(2), font_color_idx(0),
-      vnum_color_idx(0), orientation(0), needs_redraw(true),
+      vnum_color_idx(0), orientation(0), accent_def(false), needs_redraw(true),
+      settings_scope(0), settings_from_menu(false), set_row_n(0),
+      sc_trans_count(0), sc_trans_cur(0),
       menu_sel(0), menu_scroll(0), read_line(0),
       cached_book(0xFFFF), cached_chap(0), cached_count(0),
       line_count(0), trans_count(0), bm_count(0), bm_sel(0), bm_scroll(0),
@@ -348,6 +350,7 @@ void BibleInterface::RunSetup() {
     dark_mode  = THEMES[theme_idx].dark;
     accent_idx = prefs.getUChar("accent", 0);
     if (accent_idx >= ACCENT_COUNT) accent_idx = 0;
+    accent_def = (prefs.getUChar("accentdef", 0) != 0);
     font_num   = 2;
     blInit();   // must run before runTouchCalibration() so the backlight is on
 
@@ -423,7 +426,8 @@ void BibleInterface::main(uint32_t currentTime) {
 uint16_t BibleInterface::fg()         const { return THEMES[theme_idx < THEME_COUNT ? theme_idx : 0].fg;  }
 uint16_t BibleInterface::bg()         const { return THEMES[theme_idx < THEME_COUNT ? theme_idx : 0].bg;  }
 uint16_t BibleInterface::hdr_bg()     const { return THEMES[theme_idx < THEME_COUNT ? theme_idx : 0].hdr; }
-uint16_t BibleInterface::sel_bg()     const { return dark_mode ? ACCENT_DARK[accent_idx] : ACCENT_LIGHT[accent_idx]; }
+uint16_t BibleInterface::sel_bg()     const { return accent_def ? themeHighlight()
+                                                   : (dark_mode ? ACCENT_DARK[accent_idx] : ACCENT_LIGHT[accent_idx]); }
 uint16_t BibleInterface::dim_fg()     const { return THEMES[theme_idx < THEME_COUNT ? theme_idx : 0].dim; }
 uint16_t BibleInterface::verse_num_fg()const{
     if (vnum_color_idx == 0 || vnum_color_idx >= FONT_COLOR_COUNT) return 0x051D; /* muted teal default */
@@ -432,6 +436,17 @@ uint16_t BibleInterface::verse_num_fg()const{
 uint16_t BibleInterface::font_fg() const {
     if (font_color_idx == 0 || font_color_idx >= FONT_COLOR_COUNT) return fg();
     return FONT_COLOR_VAL[font_color_idx];
+}
+// Theme-fitting default Highlight: bg blended ~32% toward fg (subtle, always legible).
+uint16_t BibleInterface::themeHighlight() const {
+    uint16_t a = bg(), b = fg();
+    int ar = (a >> 11) & 0x1F, ag = (a >> 5) & 0x3F, ab = a & 0x1F;
+    int br = (b >> 11) & 0x1F, bg5 = (b >> 5) & 0x3F, bb = b & 0x1F;
+    const int t = 82;  // ~32% of 255
+    int r = ar + (br - ar) * t / 255;
+    int g = ag + (bg5 - ag) * t / 255;
+    int bl = ab + (bb - ab) * t / 255;
+    return (uint16_t)((r << 11) | (g << 5) | bl);
 }
 bool BibleInterface::isNeon() const { return theme_idx == THEME_NEON; }
 // Outline colour for borders/dividers: a stable rainbow hue (seeded by element
@@ -494,8 +509,8 @@ void BibleInterface::drawHeader(const char* title, bool show_back) {
     // button (left) and the search/battery area (right).
     {
         int16_t left   = show_back ? 46 : 4;
-        int16_t right  = (view == BV_MAIN_MENU) ? (int16_t)scrW() - 4
-                                                : (int16_t)scrW() - 66;
+        bool    full_w = (view == BV_MAIN_MENU) || (view == BV_SETTINGS && settings_from_menu);
+        int16_t right  = full_w ? (int16_t)scrW() - 4 : (int16_t)scrW() - 66;
         int16_t tw     = textWidthUTF8(title, 2);
         int16_t tx0    = (int16_t)(scrW() / 2) - tw / 2;
         if (tx0 < left)  tx0 = left;
@@ -505,9 +520,10 @@ void BibleInterface::drawHeader(const char* title, bool show_back) {
     }
 
     // Search button — same bordered-box style as the back button.
-    // Hidden on the main menu (there is no content to search there).
+    // Hidden on the main menu and on menu-opened Settings (no content to search).
     // Positioned to the left of the battery % text.
-    if (view != BV_MAIN_MENU) {
+    bool hide_search = (view == BV_MAIN_MENU) || (view == BV_SETTINGS && settings_from_menu);
+    if (!hide_search) {
         int16_t sb_x = (int16_t)scrW() - 63;
         tft.fillRoundRect(sb_x,     3, 28, 22, 4, hdr_bg());
         tft.drawRoundRect(sb_x,     3, 28, 22, 4, edgeColor(3, dim_fg()));
@@ -695,7 +711,7 @@ void BibleInterface::redrawChapterContent() {
             bool     sel     = (ch == cur_chapter) || (ch == (int16_t)menu_sel);
             uint16_t tile_bg = sel ? sel_bg() : bg();
             tft.fillRect(x, y, tile_w, tile_h, tile_bg);
-            tft.drawRect(x, y, tile_w, tile_h, edgeColor(ch, dark_mode ? 0x2104 : 0xC618));
+            tft.drawRect(x, y, tile_w, tile_h, edgeColor(menu_scroll + row, dark_mode ? 0x2104 : 0xC618));
             char buf[5];
             snprintf(buf, sizeof(buf), "%d", ch);
             tft.setTextColor(fg(), tile_bg);
@@ -799,7 +815,7 @@ void BibleInterface::drawChapterSelect() {
 
             uint16_t tile_bg = sel ? sel_bg() : bg();
             tft.fillRect(x, y, tile_w, tile_h, tile_bg);
-            tft.drawRect(x, y, tile_w, tile_h, edgeColor(ch, dark_mode ? 0x2104 : 0xC618));
+            tft.drawRect(x, y, tile_w, tile_h, edgeColor(menu_scroll + row, dark_mode ? 0x2104 : 0xC618));
 
             char buf[5];
             snprintf(buf, sizeof(buf), "%d", ch);
@@ -949,16 +965,117 @@ void BibleInterface::drawReading() {
 //   0 Font Size · 1 Font Color · 2 Verse # Color · 3 Theme · 4 Brightness
 //   5 Song Book/Translation/Dictionary · 6 Highlight · 7 Orientation
 //   8 Boot OTA_1 · 9 Calibrate Touch (resistive only)
-uint8_t BibleInterface::settingsRowCount() const {
-#ifdef HAS_CAP_TOUCH
-    return 9;
-#else
-    return 10;
+static const char* const SCOPE_NAMES[5] = { "Global", "Main Menu", "Bible", "Songs", "Dictionary" };
+
+// Representative NVS namespace used to READ a scope's settings.
+static const char* scopeReadNs(uint8_t scope) {
+    switch (scope) {
+        case 2: return "bible";
+        case 3: return "songs";
+        case 4: return "dict";
+        default: return "menu";   // Global / Main Menu
+    }
+}
+
+uint8_t BibleInterface::settingsScopeMode() const {
+    switch (settings_scope) {
+        case 2: return MODE_BIBLE;
+        case 3: return MODE_SONGS;
+        case 4: return MODE_DICT;
+        default: return 0xFF;     // Global / Main Menu have no translation
+    }
+}
+
+void BibleInterface::buildSettingsRows() {
+    uint8_t k = 0;
+    set_rows[k++] = SR_SCOPE;
+    if (settingsScopeMode() != 0xFF) set_rows[k++] = SR_TRANS;   // Translation near the top
+    set_rows[k++] = SR_FONTSIZE;
+    set_rows[k++] = SR_FONTCOL;
+    set_rows[k++] = SR_VNUMCOL;
+    set_rows[k++] = SR_THEME;
+    set_rows[k++] = SR_HIGHLIGHT;
+    set_rows[k++] = SR_ORIENT;
+    set_rows[k++] = SR_BRIGHT;                                    // just above Boot
+    set_rows[k++] = SR_BOOT;
+#ifndef HAS_CAP_TOUCH
+    set_rows[k++] = SR_CALIB;
 #endif
+    set_row_n = k;
+}
+
+// Write one "look" setting to every NVS namespace covered by the current scope
+// (Global = all modes + menu; otherwise just the scope's namespace).
+void BibleInterface::writeScoped(const char* key, uint8_t val) {
+    static const char* const ALL[] = { "bible", "songs", "dict", "menu" };
+    Preferences p;
+    if (settings_scope == 0) {            // Global
+        for (uint8_t i = 0; i < 4; i++)
+            if (p.begin(ALL[i], false)) { p.putUChar(key, val); p.end(); }
+    } else {
+        if (p.begin(scopeReadNs(settings_scope), false)) { p.putUChar(key, val); p.end(); }
+    }
+}
+
+// Load the scope's "look" settings into the live member vars (also previews the
+// scope on the settings screen). Brightness/orientation are global (excluded).
+void BibleInterface::loadScopeSettings() {
+    Preferences p;
+    bool ok = p.begin(scopeReadNs(settings_scope), true);
+    theme_idx      = ok ? p.getUChar("theme",    0) : 0;
+    accent_idx     = ok ? p.getUChar("accent",   0) : 0;
+    accent_def     = ok ? (p.getUChar("accentdef", 0) != 0) : false;
+    font_num       = ok ? p.getUChar("font",     2) : 2;
+    font_color_idx = ok ? p.getUChar("fontcol",  0) : 0;
+    vnum_color_idx = ok ? p.getUChar("vnumcol",  0) : 0;
+    if (ok) p.end();
+    if (theme_idx      >= THEME_COUNT)      theme_idx = 0;
+    if (accent_idx     >= ACCENT_COUNT)     accent_idx = 0;
+    if (font_num != 1 && font_num != 2 && font_num != 4) font_num = 2;
+    if (font_color_idx >= FONT_COLOR_COUNT) font_color_idx = 0;
+    if (vnum_color_idx >= FONT_COLOR_COUNT) vnum_color_idx = 0;
+    dark_mode = THEMES[theme_idx].dark;
+}
+
+// Scan the scope mode's SD folder for translations into sc_trans[], and set
+// sc_trans_cur from that scope's saved "trans" index.
+void BibleInterface::scopeScanTrans() {
+    sc_trans_count = 0; sc_trans_cur = 0;
+    uint8_t m = settingsScopeMode();
+    if (m == 0xFF) return;
+    const char* base = (m == MODE_SONGS) ? SONGS_SD_BASE
+                     : (m == MODE_DICT)  ? DICT_SD_BASE : BIBLE_SD_BASE;
+    File root = SD.open(base);
+    if (root) {
+        while (sc_trans_count < BIBLE_MAX_TRANS) {
+            File e = root.openNextFile();
+            if (!e) break;
+            if (e.isDirectory()) { e.close(); continue; }
+            String name = e.name(); e.close();
+            name.toLowerCase();
+            if (!name.endsWith(".xml")) continue;
+            int slash = name.lastIndexOf('/'); if (slash >= 0) name = name.substring(slash + 1);
+            String stem = name.substring(0, name.length() - 4);
+            strncpy(sc_trans[sc_trans_count], stem.c_str(), BIBLE_TRANS_LEN - 1);
+            sc_trans[sc_trans_count][BIBLE_TRANS_LEN - 1] = 0;
+            sc_trans_count++;
+        }
+        root.close();
+    }
+    for (uint8_t i = 0; i + 1 < sc_trans_count; i++)
+        for (uint8_t j = i + 1; j < sc_trans_count; j++)
+            if (strcmp(sc_trans[j], sc_trans[i]) < 0) {
+                char t[BIBLE_TRANS_LEN];
+                strncpy(t, sc_trans[i], BIBLE_TRANS_LEN);
+                strncpy(sc_trans[i], sc_trans[j], BIBLE_TRANS_LEN);
+                strncpy(sc_trans[j], t, BIBLE_TRANS_LEN);
+            }
+    Preferences p; uint8_t cur = 0;
+    if (p.begin(scopeReadNs(settings_scope), true)) { cur = p.getUChar("trans", 0); p.end(); }
+    sc_trans_cur = (cur < sc_trans_count) ? cur : 0;
 }
 
 void BibleInterface::redrawSettingsContent() {
-    const uint8_t  n     = settingsRowCount();
     const uint8_t  vis   = visItems();
     const int16_t  btn_w = 28, btn_h = 22, btn_r = 4;
 
@@ -973,7 +1090,7 @@ void BibleInterface::redrawSettingsContent() {
 
     // [<] Name [>] choice row. name_col = colour to draw the value text in
     // (0 = default fg). Font/Verse colour rows pass the actual colour so the user
-    // previews it; Highlight passes 0 (its colour is already visible on screen).
+    // previews it; others pass 0.
     auto choiceRow = [&](int16_t row_y, const char* label, const char* name,
                          bool sel, uint16_t name_col) {
         drawListRow(row_y, label, sel, false);
@@ -997,61 +1114,62 @@ void BibleInterface::redrawSettingsContent() {
         tft.setTextColor(TFT_WHITE, hdr_bg());
         tft.drawCentreString("<", bwd_bx + btn_w / 2, txt_y, 2);
     };
+    auto brightRow = [&](int16_t row_y, bool sel) {
+        drawListRow(row_y, "Brightness", sel, false);
+        uint16_t bg_c  = sel ? sel_bg() : bg();
+        int16_t  btn_y = row_y + (itemH() - btn_h) / 2;
+        int16_t  txt_y = btn_y + (btn_h - 16) / 2;
+        int16_t  num_y = row_y + (itemH() - 16) / 2;
+        int16_t  eseed = row_y / (int16_t)itemH();
+        int16_t plus_bx = (int16_t)scrW() - 9 - btn_w;
+        tft.fillRoundRect(plus_bx, btn_y, btn_w, btn_h, btn_r, hdr_bg());
+        tft.drawRoundRect(plus_bx, btn_y, btn_w, btn_h, btn_r, edgeColor(eseed, dim_fg()));
+        tft.setTextColor(TFT_WHITE, hdr_bg());
+        tft.drawCentreString("+", plus_bx + btn_w / 2, txt_y, 2);
+        char nbuf[8];
+        snprintf(nbuf, sizeof(nbuf), "%d/20", bl_idx + 1);
+        int16_t num_w = (int16_t)tft.textWidth(nbuf, 2);
+        int16_t num_x = plus_bx - 4 - num_w;
+        tft.setTextColor(fg(), bg_c);
+        tft.drawString(nbuf, num_x, num_y, 2);
+        int16_t minus_bx = num_x - 4 - btn_w;
+        tft.fillRoundRect(minus_bx, btn_y, btn_w, btn_h, btn_r, hdr_bg());
+        tft.drawRoundRect(minus_bx, btn_y, btn_w, btn_h, btn_r, edgeColor(eseed + 4, dim_fg()));
+        tft.setTextColor(TFT_WHITE, hdr_bg());
+        tft.drawCentreString("-", minus_bx + btn_w / 2, txt_y, 2);
+    };
 
     int16_t last_bottom = content_top;
     for (int vi = 0; ; vi++) {
         int16_t i     = first + vi;
         int16_t row_y = content_top - sub_px + vi * (int16_t)itemH();
-        if (row_y >= content_end || i >= (int16_t)n) break;
+        if (row_y >= content_end || i >= (int16_t)set_row_n) break;
         bool sel = (i == (int16_t)menu_sel);
 
-        if      (i == 1) choiceRow(row_y, "Font Color",    FONT_COLOR_NAMES[font_color_idx], sel, font_fg());
-        else if (i == 2) choiceRow(row_y, "Verse # Color", FONT_COLOR_NAMES[vnum_color_idx], sel, verse_num_fg());
-        else if (i == 3) choiceRow(row_y, "Theme",         THEMES[theme_idx].name,           sel, 0);
-        else if (i == 6) choiceRow(row_y, "Highlight",     ACCENT_NAMES[accent_idx],         sel, 0);
-        else if (i == 7) choiceRow(row_y, "Orientation",   ORIENT_NAMES[orientation & 3],    sel, 0);
-        else if (i == 4) {
-            // Brightness row: "Brightness" label + [-] X/20 [+] buttons.
-            drawListRow(row_y, "Brightness", sel, false);
-            uint16_t bg_c  = sel ? sel_bg() : bg();
-            int16_t  btn_y = row_y + (itemH() - btn_h) / 2;
-            int16_t  txt_y = btn_y + (btn_h - 16) / 2;
-            int16_t  num_y = row_y + (itemH() - 16) / 2;
-            int16_t plus_bx = (int16_t)scrW() - 9 - btn_w;   // -9 clears the 6px scrollbar
-            int16_t eseed   = row_y / (int16_t)itemH();
-            tft.fillRoundRect(plus_bx, btn_y, btn_w, btn_h, btn_r, hdr_bg());
-            tft.drawRoundRect(plus_bx, btn_y, btn_w, btn_h, btn_r, edgeColor(eseed, dim_fg()));
-            tft.setTextColor(TFT_WHITE, hdr_bg());
-            tft.drawCentreString("+", plus_bx + btn_w / 2, txt_y, 2);
-            char nbuf[8];
-            snprintf(nbuf, sizeof(nbuf), "%d/20", bl_idx + 1);
-            int16_t num_w = (int16_t)tft.textWidth(nbuf, 2);
-            int16_t num_x = plus_bx - 4 - num_w;
-            tft.setTextColor(fg(), bg_c);
-            tft.drawString(nbuf, num_x, num_y, 2);
-            int16_t minus_bx = num_x - 4 - btn_w;
-            tft.fillRoundRect(minus_bx, btn_y, btn_w, btn_h, btn_r, hdr_bg());
-            tft.drawRoundRect(minus_bx, btn_y, btn_w, btn_h, btn_r, edgeColor(eseed + 4, dim_fg()));
-            tft.setTextColor(TFT_WHITE, hdr_bg());
-            tft.drawCentreString("-", minus_bx + btn_w / 2, txt_y, 2);
-        } else {
-            char buf[48];
-            if (i == 0) {
-                const char* sz = (font_num == 1) ? "Small" : (font_num == 2) ? "Medium" : "Large";
-                snprintf(buf, sizeof(buf), "Font Size: %s", sz);
-            } else if (i == 5) {
-                const char* tl = (mode == MODE_SONGS) ? "Song Book"
-                               : (mode == MODE_DICT)  ? "Dictionary" : "Translation";
-                snprintf(buf, sizeof(buf), "%s: %s", tl,
-                         trans_count > 0 ? trans_stems[cur_trans] : "-");
-            } else if (i == 8) {
-                strncpy(buf, "Boot OTA_1", sizeof(buf) - 1); buf[sizeof(buf) - 1] = 0;
-#ifndef HAS_CAP_TOUCH
-            } else {  // i == 9
-                strncpy(buf, "Calibrate Touch", sizeof(buf) - 1); buf[sizeof(buf) - 1] = 0;
-#endif
+        switch (set_rows[i]) {
+            case SR_SCOPE:
+                choiceRow(row_y, "Settings Scope", SCOPE_NAMES[settings_scope], sel, 0);
+                break;
+            case SR_TRANS: {
+                uint8_t sm = settingsScopeMode();
+                const char* tl = (sm == MODE_SONGS) ? "Song Book"
+                               : (sm == MODE_DICT)  ? "Dictionary" : "Translation";
+                choiceRow(row_y, tl, sc_trans_count > 0 ? sc_trans[sc_trans_cur] : "-", sel, 0);
+                break;
             }
-            drawListRow(row_y, buf, sel, false);
+            case SR_FONTSIZE: {
+                const char* sz = (font_num == 1) ? "Small" : (font_num == 2) ? "Medium" : "Large";
+                choiceRow(row_y, "Font Size", sz, sel, 0);
+                break;
+            }
+            case SR_FONTCOL:   choiceRow(row_y, "Font Color",    FONT_COLOR_NAMES[font_color_idx], sel, font_fg());       break;
+            case SR_VNUMCOL:   choiceRow(row_y, "Verse # Color", FONT_COLOR_NAMES[vnum_color_idx], sel, verse_num_fg()); break;
+            case SR_THEME:     choiceRow(row_y, "Theme",         THEMES[theme_idx].name,           sel, 0);              break;
+            case SR_HIGHLIGHT: choiceRow(row_y, "Highlight", accent_def ? "Default" : ACCENT_NAMES[accent_idx], sel, 0); break;
+            case SR_ORIENT:    choiceRow(row_y, "Orientation",   ORIENT_NAMES[orientation & 3],    sel, 0);              break;
+            case SR_BRIGHT:    brightRow(row_y, sel); break;
+            case SR_BOOT:      drawListRow(row_y, "Boot OTA_1",      sel, false); break;
+            case SR_CALIB:     drawListRow(row_y, "Calibrate Touch", sel, false); break;
         }
         int16_t bot = row_y + (int16_t)itemH();
         if (bot > last_bottom) last_bottom = bot;
@@ -1061,7 +1179,7 @@ void BibleInterface::redrawSettingsContent() {
         tft.fillRect(0, last_bottom, scrW(), content_end - last_bottom, bg());
 
     tft.resetViewport();
-    drawScrollBar((int16_t)n, vis, first);
+    drawScrollBar((int16_t)set_row_n, vis, first);
     tft.endWrite();
 }
 
@@ -1069,7 +1187,8 @@ void BibleInterface::drawSettings() {
     tft.fillScreen(bg());
     drawHeader("Settings");
     redrawSettingsContent();
-    drawNavBar("Back", "", "");
+    // Footer: show a "Menu" button (bottom-right) only when opened from a mode.
+    drawNavBar("Back", "", settings_from_menu ? "" : "Menu");
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1573,7 +1692,7 @@ void BibleInterface::handleReadingInput() {
 }
 
 void BibleInterface::handleSettingsInput() {
-    const uint8_t SETTINGS_N = settingsRowCount();
+    const uint8_t SETTINGS_N = set_row_n;
     uint16_t tx, ty;
     bool down = pollTouch(&tx, &ty);
 
@@ -1589,13 +1708,14 @@ void BibleInterface::handleSettingsInput() {
         // Header and nav fire immediately on press (no drag ambiguity)
         if (touchInHeader(tx, ty)) {
             touch_was_down = false;
-            if (touchInSearchIcon(tx, ty)) { goToSearchInput(); return; }
+            if (!settings_from_menu && touchInSearchIcon(tx, ty)) { goToSearchInput(); return; }
             if (tx < 48) goBack();
             return;
         }
         if (touchInNav(tx, ty)) {
             touch_was_down = false;
             if (tx < scrW()/3) goBack();
+            else if (tx > 2 * (scrW()/3) && !settings_from_menu) goToMainMenu();  // footer Menu
             return;
         }
         // Highlight touched (absolute) row immediately for press feedback.
@@ -1644,98 +1764,101 @@ void BibleInterface::handleSettingsInput() {
         }
         if (menu_sel < 0 || menu_sel >= (int16_t)SETTINGS_N) return;
 
-        switch (menu_sel) {
-            case 0: // Font size
-                font_num = (font_num == 1) ? 2 : (font_num == 2) ? 4 : 1;
-                prefs.putUChar("font", font_num);
-                redrawSettingsContent();
-                break;
-            case 1: // Font color — [>] forward, [<] backward (boundary at scrW()-32)
-                if ((int16_t)touch_down_x >= (int16_t)scrW() - 32)
-                    font_color_idx = (uint8_t)((font_color_idx + 1) % FONT_COLOR_COUNT);
-                else
-                    font_color_idx = (font_color_idx == 0) ? FONT_COLOR_COUNT - 1
-                                                           : font_color_idx - 1;
-                prefs.putUChar("fontcol", font_color_idx);
-                redrawSettingsContent();
-                break;
-            case 2: // Verse # color
-                if ((int16_t)touch_down_x >= (int16_t)scrW() - 32)
-                    vnum_color_idx = (uint8_t)((vnum_color_idx + 1) % FONT_COLOR_COUNT);
-                else
-                    vnum_color_idx = (vnum_color_idx == 0) ? FONT_COLOR_COUNT - 1
-                                                           : vnum_color_idx - 1;
-                prefs.putUChar("vnumcol", vnum_color_idx);
-                redrawSettingsContent();
-                break;
-            case 3: // Theme — [>] next, [<] prev through THEMES[]
-                if ((int16_t)touch_down_x >= (int16_t)scrW() - 32)
-                    theme_idx = (uint8_t)((theme_idx + 1) % THEME_COUNT);
-                else
-                    theme_idx = (theme_idx == 0) ? THEME_COUNT - 1 : theme_idx - 1;
-                dark_mode = THEMES[theme_idx].dark;
-                prefs.putUChar("theme", theme_idx);
-                prefs.putBool ("dark", dark_mode);
-                drawSettings();   // bg/fg/header/nav all change — full repaint
+        bool fwd = ((int16_t)touch_down_x >= (int16_t)scrW() - 32);  // [>] vs [<]
+        switch ((SettingRow)set_rows[menu_sel]) {
+            case SR_SCOPE:
+                settings_scope = fwd ? (uint8_t)((settings_scope + 1) % 5)
+                                     : (settings_scope == 0 ? 4 : settings_scope - 1);
+                buildSettingsRows();
+                loadScopeSettings();   // preview + edit the chosen scope's look
+                scopeScanTrans();
+                menu_sel = 0; menu_scroll = 0; scroll_px = 0.f;
+                drawSettings();        // theme may differ — full repaint
                 return;
-            case 4: // Brightness — [+] button starts at scrW()-32; everything left = [-]
-                if ((int16_t)touch_down_x >= (int16_t)scrW() - 32) {
-                    if (bl_idx < 19) blSet(bl_idx + 1);
-                } else {
-                    if (bl_idx > 0)  blSet(bl_idx - 1);
-                }
-                redrawSettingsContent();
-                break;
-            case 5: // Song Book / Translation / Dictionary cycle
-                if (trans_count > 1) {
-                    cur_trans = (cur_trans + 1) % trans_count;
-                    prefs.putUChar("trans", cur_trans);
-                    cached_book = 0xFFFF; cached_chap = 0; cached_count = 0;
-                    book_idx_valid = false;
-                    if (mode != MODE_BIBLE) {
-                        if (loadToc(trans_stems[cur_trans])) {
-                            if (cur_book >= numBooks()) cur_book = 0;
-                            cur_sec     = (numBooks() > 0) ? bookSection(cur_book) : 0;
-                            cur_chapter = 1;
-                        }
-                    } else if (cur_book >= numBooks()) {
-                        cur_book = 0;
+            case SR_TRANS:
+                if (sc_trans_count > 1) {
+                    sc_trans_cur = fwd ? (uint8_t)((sc_trans_cur + 1) % sc_trans_count)
+                                       : (sc_trans_cur == 0 ? sc_trans_count - 1 : sc_trans_cur - 1);
+                    { Preferences p;
+                      if (p.begin(scopeReadNs(settings_scope), false)) {
+                          p.putUChar("trans", sc_trans_cur); p.end(); } }
+                    // If editing the active mode's own scope, switch it live too.
+                    if (!settings_from_menu && settingsScopeMode() == mode) {
+                        cur_trans = sc_trans_cur;
+                        cached_book = 0xFFFF; cached_chap = 0; cached_count = 0;
+                        book_idx_valid = false;
+                        if (mode != MODE_BIBLE) {
+                            if (loadToc(trans_stems[cur_trans])) {
+                                if (cur_book >= numBooks()) cur_book = 0;
+                                cur_sec     = (numBooks() > 0) ? bookSection(cur_book) : 0;
+                                cur_chapter = 1;
+                            }
+                        } else if (cur_book >= numBooks()) cur_book = 0;
                     }
                 }
                 redrawSettingsContent();
                 break;
-            case 6: // Highlight — [>] forward, [<] backward (boundary at scrW()-32)
-                if ((int16_t)touch_down_x >= (int16_t)scrW() - 32)
-                    accent_idx = (uint8_t)((accent_idx + 1) % ACCENT_COUNT);
-                else
-                    accent_idx = (accent_idx == 0) ? ACCENT_COUNT - 1 : accent_idx - 1;
-                prefs.putUChar("accent", accent_idx);
+            case SR_FONTSIZE:
+                font_num = fwd ? (font_num == 1 ? 2 : font_num == 2 ? 4 : 1)
+                               : (font_num == 1 ? 4 : font_num == 2 ? 1 : 2);
+                writeScoped("font", font_num);
                 redrawSettingsContent();
                 break;
-            case 7: // Orientation (global) — [>] next, [<] prev through 0-3
-                if ((int16_t)touch_down_x >= (int16_t)scrW() - 32)
-                    orientation = (uint8_t)((orientation + 1) % ORIENT_COUNT);
-                else
-                    orientation = (orientation == 0) ? ORIENT_COUNT - 1 : orientation - 1;
-                {
-                    Preferences mp;
-                    if (mp.begin("menu", false)) { mp.putUChar("orient", orientation); mp.end(); }
-                }
+            case SR_FONTCOL:
+                font_color_idx = fwd ? (uint8_t)((font_color_idx + 1) % FONT_COLOR_COUNT)
+                                     : (font_color_idx == 0 ? FONT_COLOR_COUNT - 1 : font_color_idx - 1);
+                writeScoped("fontcol", font_color_idx);
+                redrawSettingsContent();
+                break;
+            case SR_VNUMCOL:
+                vnum_color_idx = fwd ? (uint8_t)((vnum_color_idx + 1) % FONT_COLOR_COUNT)
+                                     : (vnum_color_idx == 0 ? FONT_COLOR_COUNT - 1 : vnum_color_idx - 1);
+                writeScoped("vnumcol", vnum_color_idx);
+                redrawSettingsContent();
+                break;
+            case SR_THEME:
+                theme_idx = fwd ? (uint8_t)((theme_idx + 1) % THEME_COUNT)
+                                : (theme_idx == 0 ? THEME_COUNT - 1 : theme_idx - 1);
+                dark_mode = THEMES[theme_idx].dark;
+                writeScoped("theme", theme_idx);
+                drawSettings();        // bg/fg all change — full repaint
+                return;
+            case SR_HIGHLIGHT: {
+                // Option 0 = Default (theme colour); 1..ACCENT_COUNT = accents.
+                uint8_t cur   = accent_def ? 0 : (uint8_t)(accent_idx + 1);
+                uint8_t total = ACCENT_COUNT + 1;
+                cur = fwd ? (uint8_t)((cur + 1) % total) : (cur == 0 ? total - 1 : cur - 1);
+                accent_def = (cur == 0);
+                if (!accent_def) accent_idx = cur - 1;
+                writeScoped("accent",    accent_idx);
+                writeScoped("accentdef", accent_def ? 1 : 0);
+                redrawSettingsContent();
+                break;
+            }
+            case SR_ORIENT:   // global (not scoped)
+                orientation = fwd ? (uint8_t)((orientation + 1) % ORIENT_COUNT)
+                                  : (orientation == 0 ? ORIENT_COUNT - 1 : orientation - 1);
+                { Preferences mp;
+                  if (mp.begin("menu", false)) { mp.putUChar("orient", orientation); mp.end(); } }
                 applyOrientation();
-                // Re-wrap any cached chapter for the new width so reading stays correct.
                 if (cached_count > 0) buildWrappedLines();
-                menu_scroll = 0;
-                drawSettings();   // full repaint in the new orientation
-                return;
-            case 8: // Boot Marauder
-                bootMarauder();
-                return;
-#ifndef HAS_CAP_TOUCH
-            case 9: // Calibrate Touch
-                runTouchCalibration();
+                menu_scroll = 0; scroll_px = 0.f;
                 drawSettings();
                 return;
+            case SR_BRIGHT:   // global (not scoped)
+                if (fwd) { if (bl_idx < 19) blSet(bl_idx + 1); }
+                else     { if (bl_idx > 0)  blSet(bl_idx - 1); }
+                redrawSettingsContent();
+                break;
+            case SR_BOOT:
+                bootMarauder();
+                return;
+            case SR_CALIB:
+#ifndef HAS_CAP_TOUCH
+                runTouchCalibration();
+                drawSettings();
 #endif
+                return;
         }
     }
 }
@@ -1985,8 +2108,14 @@ void BibleInterface::goToReading(uint16_t chapter, int16_t start_line) {
     saveState();
     needs_redraw = true;
 }
-void BibleInterface::goToSettings() {
+void BibleInterface::goToSettings(bool from_menu) {
     stopFling();
+    settings_from_menu = from_menu;
+    // Default scope = the context settings was opened from.
+    settings_scope = from_menu ? 1 /*Main Menu*/ : (uint8_t)(mode + 2);
+    buildSettingsRows();
+    loadScopeSettings();   // load (and preview) the scope's look settings
+    scopeScanTrans();      // populate the Translation row for the scope
     view = BV_SETTINGS;
     menu_sel = 0;
     menu_scroll = 0;
@@ -2262,6 +2391,7 @@ void BibleInterface::goToMainMenu() {
     dark_mode  = THEMES[theme_idx].dark;
     accent_idx = prefs.getUChar("accent", 0);
     if (accent_idx >= ACCENT_COUNT) accent_idx = 0;
+    accent_def = (prefs.getUChar("accentdef", 0) != 0);
     font_num   = 2;
     // Keep the current backlight level (avoids a brightness flash when returning
     // from a mode); each mode still applies its own brightness on entry.
@@ -2295,9 +2425,10 @@ void BibleInterface::drawMainMenu() {
 
     const int16_t margin = 16;
     const int16_t gap    = 14;
+    const int16_t sh     = 34;                 // small Settings button height
     int16_t top   = (int16_t)contentY() + 12;
     int16_t avail = (int16_t)scrH() - top - 12;
-    int16_t bh    = (avail - gap * 2) / 3;
+    int16_t bh    = (avail - sh - gap * 3) / 3;
     for (uint8_t i = 0; i < 3; i++) {
         int16_t y = top + i * (bh + gap);
         tft.fillRoundRect(margin, y, scrW() - 2 * margin, bh, 12, btn_col[i]);
@@ -2305,6 +2436,14 @@ void BibleInterface::drawMainMenu() {
         tft.setTextColor(fg(), btn_col[i]);
         tft.drawCentreString(MENU_LABELS[i], scrW() / 2, y + (bh - 26) / 2, 4);
     }
+    // Smaller Settings button under Dictionary.
+    int16_t sy = top + 3 * (bh + gap);
+    int16_t sw = (int16_t)((scrW() - 2 * margin) * 7 / 10);
+    int16_t sx = ((int16_t)scrW() - sw) / 2;
+    tft.fillRoundRect(sx, sy, sw, sh, 10, hdr_bg());
+    tft.drawRoundRect(sx, sy, sw, sh, 10, edgeColor(9, dim_fg()));
+    tft.setTextColor(fg(), hdr_bg());
+    tft.drawCentreString("Settings", scrW() / 2, sy + (sh - 16) / 2, 2);
 }
 
 void BibleInterface::handleMainMenuInput() {
@@ -2319,9 +2458,10 @@ void BibleInterface::handleMainMenuInput() {
         touch_was_down = false;
         const int16_t margin = 16;
         const int16_t gap    = 14;
+        const int16_t sh     = 34;
         int16_t top   = (int16_t)contentY() + 12;
         int16_t avail = (int16_t)scrH() - top - 12;
-        int16_t bh    = (avail - gap * 2) / 3;
+        int16_t bh    = (avail - sh - gap * 3) / 3;
         for (uint8_t i = 0; i < 3; i++) {
             int16_t y = top + i * (bh + gap);
             if ((int16_t)touch_down_y >= y && (int16_t)touch_down_y < y + bh &&
@@ -2329,6 +2469,15 @@ void BibleInterface::handleMainMenuInput() {
                 enterMode((ContentMode)i);
                 return;
             }
+        }
+        // Settings button (smaller, under Dictionary).
+        int16_t sy = top + 3 * (bh + gap);
+        int16_t sw = (int16_t)((scrW() - 2 * margin) * 7 / 10);
+        int16_t sx = ((int16_t)scrW() - sw) / 2;
+        if ((int16_t)touch_down_y >= sy && (int16_t)touch_down_y < sy + sh &&
+            (int16_t)touch_down_x >= sx && (int16_t)touch_down_x < sx + sw) {
+            goToSettings(true);   // from main menu
+            return;
         }
         // Tap elsewhere (e.g. dismissing a "no files" message) — repaint the menu.
         needs_redraw = true;
@@ -2458,6 +2607,19 @@ void BibleInterface::goBack() {
             }
             break;
         case BV_SETTINGS:
+            // Restore the active context's look (settings may have previewed another scope).
+            settings_scope = settings_from_menu ? 1 : (uint8_t)(mode + 2);
+            loadScopeSettings();
+            if (settings_from_menu) { goToMainMenu(); break; }
+            if (cached_count > 0) {
+                buildWrappedLines();   // re-wrap in case Font Size changed
+                view = BV_READING;
+                scroll_px = (float)read_line * (float)lineH();
+                needs_redraw = true;
+            } else {
+                goToSection();
+            }
+            break;
         case BV_BOOKMARKS:
             bm_confirm_pending = false;
             if (cached_count > 0) {
@@ -2676,7 +2838,7 @@ void BibleInterface::updateFling(uint32_t now) {
             max_px = (float)max(0, (int)search_result_count - (int)visSearchItems()) * (float)srchH();
             break;
         case BV_SETTINGS:
-            max_px = (float)max(0, (int)settingsRowCount() - (int)visItems()) * (float)itemH();
+            max_px = (float)max(0, (int)set_row_n - (int)visItems()) * (float)itemH();
             break;
         default:
             fling_active = false;
@@ -3214,6 +3376,7 @@ void BibleInterface::saveState() {
     prefs.putUChar("fontcol",   font_color_idx);
     prefs.putUChar("vnumcol",   vnum_color_idx);
     prefs.putUChar("theme",     theme_idx);
+    prefs.putUChar("accentdef", accent_def ? 1 : 0);
     prefs.putBool ("dark",      dark_mode);   // kept for backward compatibility
     prefs.putUChar("accent",    accent_idx);
     prefs.putBool ("srch_part", srch_partial_match);
@@ -3236,6 +3399,7 @@ void BibleInterface::loadState() {
     if (theme_idx >= THEME_COUNT) theme_idx = 0;
     dark_mode         = THEMES[theme_idx].dark;
     accent_idx        = prefs.getUChar("accent",    0);
+    accent_def        = (prefs.getUChar("accentdef", 0) != 0);
     srch_partial_match = prefs.getBool ("srch_part", true);
     srch_ignore_punct  = prefs.getBool ("srch_pnct", true);
     srch_scope         = prefs.getUChar("srch_scp",  0);

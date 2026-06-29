@@ -193,8 +193,18 @@ private:
     uint8_t   font_num;     // 1=small(8px), 2=medium(16px), 4=large(26px)
     uint8_t   font_color_idx; // 0 = Default (theme fg); else index into FONT_COLOR_VAL[]
     uint8_t   vnum_color_idx; // 0 = Default (teal); else index into FONT_COLOR_VAL[]
-    uint8_t   orientation;    // 0 = Normal, 1 = Flipped 180° (global, "menu" NVS)
+    uint8_t   orientation;    // 0-3 screen rotation (global, "menu" NVS)
+    bool      accent_def;     // Highlight uses the theme-default colour (vs accent_idx)
     bool      needs_redraw;
+
+    // ── Settings screen state ─────────────────────────────────────────────
+    uint8_t   settings_scope;      // 0 Global · 1 Main Menu · 2 Bible · 3 Songs · 4 Dictionary
+    bool      settings_from_menu;  // opened from the main menu (vs a content mode)
+    uint8_t   set_rows[16];        // dynamic list of SettingRow kinds currently shown
+    uint8_t   set_row_n;
+    char      sc_trans[BIBLE_MAX_TRANS][BIBLE_TRANS_LEN]; // scope's translation stems
+    uint8_t   sc_trans_count;
+    uint8_t   sc_trans_cur;
 
     // ── List scroll/select ────────────────────────────────────────────────
     int16_t   menu_sel;     // highlighted item index (absolute)
@@ -298,7 +308,17 @@ private:
     void drawReading();
     void drawSettings();
     void redrawSettingsContent(); // partial redraw — rows only, no fillScreen/header/nav
-    uint8_t settingsRowCount() const;  // number of settings rows (board-dependent)
+    // Settings rows are dynamic (depend on Settings Scope + board), addressed by kind.
+    enum SettingRow : uint8_t {
+        SR_SCOPE, SR_TRANS, SR_FONTSIZE, SR_FONTCOL, SR_VNUMCOL,
+        SR_THEME, SR_HIGHLIGHT, SR_ORIENT, SR_BRIGHT, SR_BOOT, SR_CALIB
+    };
+    void     buildSettingsRows();        // fill set_rows[] for the current scope/board
+    uint8_t  settingsScopeMode() const;  // MODE_* for a content-mode scope, else 0xFF
+    uint16_t themeHighlight() const;     // theme-fitting default Highlight colour
+    void     loadScopeSettings();        // load "look" settings from the scope's NVS
+    void     writeScoped(const char* key, uint8_t val); // write to every NVS ns in the scope
+    void     scopeScanTrans();           // scan the scope mode's SD folder into sc_trans[]
 #ifndef HAS_CAP_TOUCH
     void runTouchCalibration();   // show TFT_eSPI calibration wizard, save result to Prefs
 #endif
@@ -408,7 +428,7 @@ private:
     void goToBook(uint8_t sec);
     void goToChapter(uint16_t book);
     void goToReading(uint16_t chapter, int16_t start_line = 0);
-    void goToSettings();
+    void goToSettings(bool from_menu = false);
     void goToBookmarks();
     void addBookmarkCurrent();
     void jumpToBookmark(uint8_t bm_idx);
