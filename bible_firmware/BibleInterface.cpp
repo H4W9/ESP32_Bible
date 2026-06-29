@@ -3601,17 +3601,41 @@ void BibleInterface::handleSearchInputInput() {
                 // New — open keyboard, run search if confirmed
                 search_query[0] = 0;
 #ifdef HAS_TOUCH
-                // Dictionary search auto-scopes to the query's letter bucket, so the
-                // Bible/Section/Book scope row is hidden (scope = nullptr) there.
                 const char* kb_title = (mode == MODE_SONGS) ? "Search Songs:"
                                      : (mode == MODE_DICT)  ? "Search word:"
                                                             : "Search Bible:";
-                bool ok = bibleKeyboardInput(tft, fg(), bg(),
-                                             search_query, BIBLE_SEARCH_QUERY_LEN,
-                                             kb_title,
-                                             &srch_partial_match,
-                                             &srch_ignore_punct,
-                                             (mode == MODE_DICT) ? nullptr : &srch_scope);
+                bool ok;
+                if (mode == MODE_DICT) {
+                    // Dictionary auto-scopes to the query's letter bucket, so the
+                    // scope row becomes a "Dict:" selector (tap to switch dictionary).
+                    char up[BIBLE_MAX_TRANS][BIBLE_TRANS_LEN];
+                    const char* names[BIBLE_MAX_TRANS];
+                    for (uint8_t i = 0; i < trans_count; i++) {
+                        strncpy(up[i], trans_stems[i], BIBLE_TRANS_LEN - 1);
+                        up[i][BIBLE_TRANS_LEN - 1] = 0;
+                        for (char* p = up[i]; *p; ++p) *p = (char)toupper((unsigned char)*p);
+                        names[i] = up[i];
+                    }
+                    uint8_t dsel = cur_trans;
+                    ok = bibleKeyboardInput(tft, fg(), bg(),
+                                            search_query, BIBLE_SEARCH_QUERY_LEN,
+                                            kb_title, &srch_partial_match,
+                                            &srch_ignore_punct, nullptr,
+                                            names, trans_count, &dsel);
+                    if (dsel != cur_trans && dsel < trans_count) {
+                        cur_trans = dsel;
+                        prefs.putUChar("trans", cur_trans);
+                        loadToc(trans_stems[cur_trans]);
+                        cached_book = 0xFFFF; cached_chap = 0; cached_count = 0;
+                        if (cur_book >= numBooks()) cur_book = 0;
+                        cur_sec = (numBooks() > 0) ? bookSection(cur_book) : 0;
+                    }
+                } else {
+                    ok = bibleKeyboardInput(tft, fg(), bg(),
+                                            search_query, BIBLE_SEARCH_QUERY_LEN,
+                                            kb_title, &srch_partial_match,
+                                            &srch_ignore_punct, &srch_scope);
+                }
                 // Persist any option changes the user made inside the keyboard
                 prefs.putBool ("srch_part", srch_partial_match);
                 prefs.putBool ("srch_pnct", srch_ignore_punct);

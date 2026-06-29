@@ -101,7 +101,8 @@ static void drawSzligLabel(TFT_eSPI& tft,
 // Row 2: "Scope:" with Bible / Section / Book cycle buttons.
 static void drawOptions(TFT_eSPI& tft, uint16_t fg, uint16_t bg,
                         uint16_t scrW, uint16_t scrH,
-                        bool partial_match, bool ignore_punct, uint8_t scope) {
+                        bool partial_match, bool ignore_punct, uint8_t scope,
+                        const char* dict_name = nullptr) {
     int16_t  optY   = kbY(scrH) - optH();
     uint16_t opt_bg = (bg == TFT_WHITE) ? (uint16_t)0xBDF7 : (uint16_t)0x1082;
     uint16_t bdr    = (bg == TFT_WHITE) ? (uint16_t)0x8430 : (uint16_t)0x4208;
@@ -123,21 +124,32 @@ static void drawOptions(TFT_eSPI& tft, uint16_t fg, uint16_t bg,
     drawCheckRow(optY,              partial_match, "Partial Match");
     drawCheckRow(optY + OPT_ROW_H,  ignore_punct,  "Ignore Punctuation");
 
-    // ── Row 2: Scope ──────────────────────────────────────────────────────
+    // ── Row 2: Scope  (or "Dict:" selector in dictionary mode) ─────────────
     int16_t r2y = optY + 2 * OPT_ROW_H;
     tft.setTextColor(fg, opt_bg);
-    tft.drawString("Scope:", 6, r2y + (OPT_ROW_H - 8) / 2, 1);
-
-    static const char* SCOPES[3] = { "Bible", "Section", "Book" };
-    int16_t bx = 52;
-    for (uint8_t i = 0; i < 3; i++) {
-        int16_t bw  = (int16_t)tft.textWidth(SCOPES[i], 1) + 8;
-        bool    sel = (scope == i);
-        tft.fillRoundRect(bx, r2y + 4, bw, OPT_ROW_H - 8, 3, sel ? hi_bg : opt_bg);
-        tft.drawRoundRect(bx, r2y + 4, bw, OPT_ROW_H - 8, 3, sel ? fg : bdr);
-        tft.setTextColor(sel ? (uint16_t)TFT_BLACK : fg, sel ? hi_bg : opt_bg);
-        tft.drawString(SCOPES[i], bx + 4, r2y + (OPT_ROW_H - 8) / 2, 1);
-        bx += bw + 4;
+    if (dict_name) {
+        // Dictionary mode: tap the row to cycle to the next dictionary.
+        tft.drawString("Dict:", 6, r2y + (OPT_ROW_H - 8) / 2, 1);
+        char b[40];
+        snprintf(b, sizeof(b), "< %s >", dict_name);
+        int16_t bw = (int16_t)tft.textWidth(b, 1) + 10;
+        tft.fillRoundRect(52, r2y + 4, bw, OPT_ROW_H - 8, 3, hi_bg);
+        tft.drawRoundRect(52, r2y + 4, bw, OPT_ROW_H - 8, 3, fg);
+        tft.setTextColor((uint16_t)TFT_BLACK, hi_bg);
+        tft.drawString(b, 57, r2y + (OPT_ROW_H - 8) / 2, 1);
+    } else {
+        tft.drawString("Scope:", 6, r2y + (OPT_ROW_H - 8) / 2, 1);
+        static const char* SCOPES[3] = { "Bible", "Section", "Book" };
+        int16_t bx = 52;
+        for (uint8_t i = 0; i < 3; i++) {
+            int16_t bw  = (int16_t)tft.textWidth(SCOPES[i], 1) + 8;
+            bool    sel = (scope == i);
+            tft.fillRoundRect(bx, r2y + 4, bw, OPT_ROW_H - 8, 3, sel ? hi_bg : opt_bg);
+            tft.drawRoundRect(bx, r2y + 4, bw, OPT_ROW_H - 8, 3, sel ? fg : bdr);
+            tft.setTextColor(sel ? (uint16_t)TFT_BLACK : fg, sel ? hi_bg : opt_bg);
+            tft.drawString(SCOPES[i], bx + 4, r2y + (OPT_ROW_H - 8) / 2, 1);
+            bx += bw + 4;
+        }
     }
 }
 
@@ -400,22 +412,31 @@ bool bibleKeyboardInput(TFT_eSPI& tft,
                         const char* title,
                         bool*       partial_match,
                         bool*       ignore_punct,
-                        uint8_t*    scope) {
+                        uint8_t*    scope,
+                        const char* const* dict_names,
+                        uint8_t            dict_count,
+                        uint8_t*           dict_sel) {
     if (!buffer || bufLen < 2) return false;
 
     uint16_t scrW      = (uint16_t)tft.width();
     uint16_t scrH      = (uint16_t)tft.height();
-    bool     show_opts = (partial_match != nullptr || ignore_punct != nullptr || scope != nullptr);
+    bool     show_opts = (partial_match != nullptr || ignore_punct != nullptr ||
+                          scope != nullptr || dict_sel != nullptr);
 
     KbLayout layout = KB_ALPHA;
     bool     caps   = false;
+
+    auto curDictName = [&]() -> const char* {
+        if (dict_names && dict_sel && *dict_sel < dict_count) return dict_names[*dict_sel];
+        return nullptr;
+    };
 
     drawTextArea(tft, fg, bg, scrW, scrH, title, buffer, show_opts);
     if (show_opts) {
         bool    pm = partial_match ? *partial_match : true;
         bool    ip = ignore_punct  ? *ignore_punct  : true;
         uint8_t sc = scope         ? *scope         : 0;
-        drawOptions(tft, fg, bg, scrW, scrH, pm, ip, sc);
+        drawOptions(tft, fg, bg, scrW, scrH, pm, ip, sc, curDictName());
     }
     drawKeyboard(tft, fg, bg, scrW, scrH, layout, caps);
 
@@ -440,13 +461,15 @@ bool bibleKeyboardInput(TFT_eSPI& tft,
                     *partial_match = !(*partial_match);
                 } else if (row == 1 && ignore_punct) {
                     *ignore_punct = !(*ignore_punct);
+                } else if (row == 2 && dict_sel && dict_count > 1) {
+                    *dict_sel = (uint8_t)((*dict_sel + 1) % dict_count);
                 } else if (row == 2 && scope) {
                     *scope = (*scope + 1) % 3;
                 }
                 bool    pm = partial_match ? *partial_match : true;
                 bool    ip = ignore_punct  ? *ignore_punct  : true;
                 uint8_t sc = scope         ? *scope         : 0;
-                drawOptions(tft, fg, bg, scrW, scrH, pm, ip, sc);
+                drawOptions(tft, fg, bg, scrW, scrH, pm, ip, sc, curDictName());
                 continue;
             }
 
