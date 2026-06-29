@@ -138,6 +138,22 @@ static const char* const ORIENT_NAMES[4] = { "Normal", "Landscape", "Flip 180", 
 static const uint8_t ORIENT_COUNT = 4;
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Colour themes (RGB565). `dark` selects the accent (DARK vs LIGHT) palette and
+// divider/scrollbar shades. The first two match the original Dark/Light look.
+// ─────────────────────────────────────────────────────────────────────────────
+struct ThemeDef { uint16_t bg, fg, hdr, dim; bool dark; const char* name; };
+static const ThemeDef THEMES[] = {
+    { 0x0000, 0xFFFF, 0x1082, 0x7BEF, true,  "Dark"   },  // black / white
+    { 0xFFFF, 0x0000, 0x4A69, 0x632C, false, "Light"  },  // white / black
+    { 0xF717, 0x51E3, 0x8B26, 0xB4AD, false, "Sepia"  },  // cream / brown
+    { 0x0000, 0xAD55, 0x0841, 0x4208, true,  "Night"  },  // black / soft gray
+    { 0x2104, 0xE73C, 0x4209, 0x8410, true,  "Gray"   },  // dark gray / near-white
+    { 0x0866, 0xFFFF, 0x190C, 0x73D4, true,  "Navy"   },  // deep blue / white
+    { 0x0141, 0xCF99, 0x0242, 0x646C, true,  "Forest" },  // dark green / pale green
+};
+static const uint8_t THEME_COUNT = 7;
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Section metadata
 // ─────────────────────────────────────────────────────────────────────────────
 const uint8_t BibleInterface::SEC_BOOK_START[4]  = { 0, 22, 39, 49 };
@@ -256,7 +272,7 @@ BibleInterface::BibleInterface()
     : cur_sec(0), cur_book(0), cur_chapter(1), cur_trans(0),
       mode(MODE_BIBLE), rt_books(nullptr), rt_book_count(0),
       rt_secs(nullptr), rt_sec_count(0), rt_pages(nullptr), rt_page_count(0),
-      view(BV_MAIN_MENU), dark_mode(true), font_num(2), font_color_idx(0),
+      view(BV_MAIN_MENU), dark_mode(true), theme_idx(0), font_num(2), font_color_idx(0),
       vnum_color_idx(0), orientation(0), needs_redraw(true),
       menu_sel(0), menu_scroll(0), read_line(0),
       cached_book(0xFFFF), cached_chap(0), cached_count(0),
@@ -307,7 +323,9 @@ void BibleInterface::RunSetup() {
     if (orientation > 3) orientation = 0;
     applyOrientation();                 // global 0-3 orientation — set before first draw
     mode       = MODE_BIBLE;            // accessors unused at the menu; harmless default
-    dark_mode  = prefs.getBool ("dark",   true);
+    theme_idx  = prefs.getUChar("theme", 0);
+    if (theme_idx >= THEME_COUNT) theme_idx = 0;
+    dark_mode  = THEMES[theme_idx].dark;
     accent_idx = prefs.getUChar("accent", 0);
     if (accent_idx >= ACCENT_COUNT) accent_idx = 0;
     font_num   = 2;
@@ -382,11 +400,11 @@ void BibleInterface::main(uint32_t currentTime) {
 // ─────────────────────────────────────────────────────────────────────────────
 // Color scheme
 // ─────────────────────────────────────────────────────────────────────────────
-uint16_t BibleInterface::fg()         const { return dark_mode ? TFT_WHITE    : TFT_BLACK; }
-uint16_t BibleInterface::bg()         const { return dark_mode ? TFT_BLACK    : TFT_WHITE; }
-uint16_t BibleInterface::hdr_bg()     const { return dark_mode ? 0x1082       : 0x4A69;   }
+uint16_t BibleInterface::fg()         const { return THEMES[theme_idx < THEME_COUNT ? theme_idx : 0].fg;  }
+uint16_t BibleInterface::bg()         const { return THEMES[theme_idx < THEME_COUNT ? theme_idx : 0].bg;  }
+uint16_t BibleInterface::hdr_bg()     const { return THEMES[theme_idx < THEME_COUNT ? theme_idx : 0].hdr; }
 uint16_t BibleInterface::sel_bg()     const { return dark_mode ? ACCENT_DARK[accent_idx] : ACCENT_LIGHT[accent_idx]; }
-uint16_t BibleInterface::dim_fg()     const { return dark_mode ? 0x7BEF       : 0x632C;   }
+uint16_t BibleInterface::dim_fg()     const { return THEMES[theme_idx < THEME_COUNT ? theme_idx : 0].dim; }
 uint16_t BibleInterface::verse_num_fg()const{
     if (vnum_color_idx == 0 || vnum_color_idx >= FONT_COLOR_COUNT) return 0x051D; /* muted teal default */
     return FONT_COLOR_VAL[vnum_color_idx];
@@ -909,7 +927,7 @@ void BibleInterface::redrawSettingsContent() {
         int16_t  btn_y = row_y + (itemH() - btn_h) / 2;
         int16_t  txt_y = btn_y + (btn_h - 16) / 2;
         int16_t  nam_y = row_y + (itemH() - 16) / 2;
-        int16_t  fwd_bx = (int16_t)scrW() - 4 - btn_w;
+        int16_t  fwd_bx = (int16_t)scrW() - 9 - btn_w;   // -9 clears the 6px scrollbar
         tft.fillRoundRect(fwd_bx, btn_y, btn_w, btn_h, btn_r, hdr_bg());
         tft.drawRoundRect(fwd_bx, btn_y, btn_w, btn_h, btn_r, dim_fg());
         tft.setTextColor(TFT_WHITE, hdr_bg());
@@ -933,6 +951,7 @@ void BibleInterface::redrawSettingsContent() {
 
         if (i == 1) { choiceRow(row_y, "Font Color",    FONT_COLOR_NAMES[font_color_idx], sel, font_fg());       continue; }
         if (i == 2) { choiceRow(row_y, "Verse # Color", FONT_COLOR_NAMES[vnum_color_idx], sel, verse_num_fg()); continue; }
+        if (i == 3) { choiceRow(row_y, "Theme",         THEMES[theme_idx].name,           sel, 0);              continue; }
         if (i == 6) { choiceRow(row_y, "Highlight",     ACCENT_NAMES[accent_idx],         sel, 0);              continue; }
         if (i == 7) { choiceRow(row_y, "Orientation",   ORIENT_NAMES[orientation & 3],    sel, 0);              continue; }
 
@@ -943,7 +962,7 @@ void BibleInterface::redrawSettingsContent() {
             int16_t  btn_y = row_y + (itemH() - btn_h) / 2;
             int16_t  txt_y = btn_y + (btn_h - 16) / 2;
             int16_t  num_y = row_y + (itemH() - 16) / 2;
-            int16_t plus_bx = (int16_t)scrW() - 4 - btn_w;
+            int16_t plus_bx = (int16_t)scrW() - 9 - btn_w;   // -9 clears the 6px scrollbar
             tft.fillRoundRect(plus_bx, btn_y, btn_w, btn_h, btn_r, hdr_bg());
             tft.drawRoundRect(plus_bx, btn_y, btn_w, btn_h, btn_r, dim_fg());
             tft.setTextColor(TFT_WHITE, hdr_bg());
@@ -966,8 +985,6 @@ void BibleInterface::redrawSettingsContent() {
         if (i == 0) {
             const char* sz = (font_num == 1) ? "Small" : (font_num == 2) ? "Medium" : "Large";
             snprintf(buf, sizeof(buf), "Font Size: %s", sz);
-        } else if (i == 3) {
-            snprintf(buf, sizeof(buf), "Theme: %s", dark_mode ? "Dark" : "Light");
         } else if (i == 5) {
             const char* tl = (mode == MODE_SONGS) ? "Song Book"
                            : (mode == MODE_DICT)  ? "Dictionary" : "Translation";
@@ -1577,13 +1594,16 @@ void BibleInterface::handleSettingsInput() {
                 prefs.putUChar("vnumcol", vnum_color_idx);
                 redrawSettingsContent();
                 break;
-            case 3: // Theme — bg/header/nav all change, repaint each zone without fillScreen
-                dark_mode = !dark_mode;
-                prefs.putBool("dark", dark_mode);
-                drawHeader("Settings");
-                redrawSettingsContent();
-                drawNavBar("Back", "", "");
-                break;
+            case 3: // Theme — [>] next, [<] prev through THEMES[]
+                if ((int16_t)touch_down_x >= (int16_t)scrW() - 32)
+                    theme_idx = (uint8_t)((theme_idx + 1) % THEME_COUNT);
+                else
+                    theme_idx = (theme_idx == 0) ? THEME_COUNT - 1 : theme_idx - 1;
+                dark_mode = THEMES[theme_idx].dark;
+                prefs.putUChar("theme", theme_idx);
+                prefs.putBool ("dark", dark_mode);
+                drawSettings();   // bg/fg/header/nav all change — full repaint
+                return;
             case 4: // Brightness — [+] button starts at scrW()-32; everything left = [-]
                 if ((int16_t)touch_down_x >= (int16_t)scrW() - 32) {
                     if (bl_idx < 19) blSet(bl_idx + 1);
@@ -2155,7 +2175,9 @@ void BibleInterface::goToMainMenu() {
     prefs.end();
     prefs.begin("menu", false);
     mode       = MODE_BIBLE;            // accessors unused at the menu
-    dark_mode  = prefs.getBool ("dark",   true);
+    theme_idx  = prefs.getUChar("theme", 0);
+    if (theme_idx >= THEME_COUNT) theme_idx = 0;
+    dark_mode  = THEMES[theme_idx].dark;
     accent_idx = prefs.getUChar("accent", 0);
     if (accent_idx >= ACCENT_COUNT) accent_idx = 0;
     font_num   = 2;
@@ -3082,7 +3104,8 @@ void BibleInterface::saveState() {
     prefs.putUChar("font",      font_num);
     prefs.putUChar("fontcol",   font_color_idx);
     prefs.putUChar("vnumcol",   vnum_color_idx);
-    prefs.putBool ("dark",      dark_mode);
+    prefs.putUChar("theme",     theme_idx);
+    prefs.putBool ("dark",      dark_mode);   // kept for backward compatibility
     prefs.putUChar("accent",    accent_idx);
     prefs.putBool ("srch_part", srch_partial_match);
     prefs.putBool ("srch_pnct", srch_ignore_punct);
@@ -3098,7 +3121,11 @@ void BibleInterface::loadState() {
     if (font_color_idx >= FONT_COLOR_COUNT) font_color_idx = 0;
     vnum_color_idx    = prefs.getUChar("vnumcol",   0);
     if (vnum_color_idx >= FONT_COLOR_COUNT) vnum_color_idx = 0;
-    dark_mode         = prefs.getBool ("dark",      true);
+    // Theme: prefer "theme" index; fall back to the legacy "dark" bool (0=Dark,1=Light).
+    theme_idx         = prefs.getUChar("theme", 0xFF);
+    if (theme_idx == 0xFF) theme_idx = prefs.getBool("dark", true) ? 0 : 1;
+    if (theme_idx >= THEME_COUNT) theme_idx = 0;
+    dark_mode         = THEMES[theme_idx].dark;
     accent_idx        = prefs.getUChar("accent",    0);
     srch_partial_match = prefs.getBool ("srch_part", true);
     srch_ignore_punct  = prefs.getBool ("srch_pnct", true);

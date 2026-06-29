@@ -8,8 +8,11 @@ Each script produces, per "translation":
 - `<name>.xml` — verses: `<verse osisID="Code.Chapter.Verse">text</verse>`
 - `<name>.toc` — a small structure index the firmware loads: sections, books, chapter counts,
   and the **byte offset** of each book so chapter loads are instant (no on-device scan).
+- `<name>.pgx` — **Dictionary only**: a page index (`firstword - lastword` per 100-word page)
+  so a letter opens as a readable page list instead of a number grid.
 
-You copy the resulting `.xml` + `.toc` files onto the SD card:
+You copy the resulting files onto the SD card (Dictionary needs `.xml` + `.toc` + `.pgx`;
+Songs needs `.xml` + `.toc`):
 
 | Mode       | SD folder      | Source script             |
 |------------|----------------|---------------------------|
@@ -17,9 +20,11 @@ You copy the resulting `.xml` + `.toc` files onto the SD card:
 | Songs      | `/songs/`      | `generate_songs_xml.py`   |
 | Dictionary | `/dictionary/` | `generate_dict_xml.py`    |
 
-> The firmware compresses German umlauts (ä ö ü Ä Ö Ü ß) to private byte codes on load, so the
-> scripts just write normal UTF-8. Other non-ASCII characters are transliterated to a base
-> letter or dropped, because the display can't render them.
+> **Text the firmware can render:** ASCII, German umlauts (ä ö ü Ä Ö Ü ß — compressed to private
+> byte codes on load), and common typographic marks (curly quotes, en/em dashes, ellipsis — the
+> firmware maps these to their ASCII equivalents `' " - ...` at draw time). Accented Latin is
+> transliterated to a base letter; anything else is dropped. Songs are also written in
+> **alphabetical order** (categories, then song titles).
 
 ---
 
@@ -172,11 +177,13 @@ python generate_dict_xml.py wiktionary "kaikki.org-dictionary-German.jsonl" --la
 ### Result (example dict.cc run)
 ```
 dict_out\
-  de-en.xml / .toc      (1,311,733 entries, 28 letter-books)
-  en-de.xml / .toc      (1,311,733 entries, reverse)
+  de-en.xml / .toc / .pgx   (1,311,733 entries, 28 letter-books)
+  en-de.xml / .toc / .pgx   (1,311,733 entries, reverse)
 ```
-Copy every `.xml` + `.toc` into `/dictionary/`. Each file is a selectable dictionary; browse by
-first letter, or just use **Search** (the fast way to look a word up).
+Copy every `.xml` + `.toc` + `.pgx` into `/dictionary/`. Each file is a selectable dictionary.
+Pick a letter to get a **page list** ("firstword - lastword", 100 words/page), or just use
+**Search** (the fast way — it scans only the matching letter bucket). If `.pgx` is missing the
+pages still work, just labelled "Page N".
 
 ---
 
@@ -198,7 +205,7 @@ Malformed XML in one file makes only that translation fail to open; the others s
 SD root\
   bible\        asv.xml, web.xml, …            (Bible mode)
   songs\        *.xml + *.toc                  (from generate_songs_xml.py)
-  dictionary\   *.xml + *.toc                  (from generate_dict_xml.py)
+  dictionary\   *.xml + *.toc + *.pgx          (from generate_dict_xml.py)
 ```
 
 Each mode keeps its own `bookmarks.txt` and `srch_hist.txt` inside its own folder, and its own

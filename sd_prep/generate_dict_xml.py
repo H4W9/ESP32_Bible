@@ -363,7 +363,7 @@ def _flip(name):
 
 def _finish(out_dir):
     print(f"\nDone.  Output: ./{out_dir}/")
-    print(f"Copy the .xml + .toc files into  /dictionary/  on the SD card.")
+    print(f"Copy the .xml + .toc + .pgx files into  /dictionary/  on the SD card.")
 
 
 def build_parser():

@@ -187,7 +187,8 @@ private:
 
     // ── View state ────────────────────────────────────────────────────────
     BibleView view;
-    bool      dark_mode;
+    bool      dark_mode;    // derived from theme_idx (THEMES[].dark) — drives accent/divider choices
+    uint8_t   theme_idx;    // index into THEMES[] (colour scheme)
     uint8_t   font_num;     // 1=small(8px), 2=medium(16px), 4=large(26px)
     uint8_t   font_color_idx; // 0 = Default (theme fg); else index into FONT_COLOR_VAL[]
     uint8_t   vnum_color_idx; // 0 = Default (teal); else index into FONT_COLOR_VAL[]

@@ -59,8 +59,20 @@ static inline int16_t optH()          { return OPT_ROW_H * OPT_ROWS; }
 // ─────────────────────────────────────────────────────────────────────────────
 static bool kb_rawTouch(TFT_eSPI& tft, uint16_t* x, uint16_t* y) {
 #ifdef HAS_CAP_TOUCH
-    (void)tft;
-    return ft6336_update(x, y) != 0;
+    if (!ft6336_update(x, y)) return false;
+    // FT6336 reports panel-native (portrait) coords; map them to the active
+    // rotation so they match the keyboard's tft.width()/height() layout.
+    uint8_t  rot = tft.getRotation() & 3;
+    uint16_t W0  = (rot & 1) ? (uint16_t)tft.height() : (uint16_t)tft.width();
+    uint16_t H0  = (rot & 1) ? (uint16_t)tft.width()  : (uint16_t)tft.height();
+    uint16_t rx = *x, ry = *y;
+    switch (rot) {
+        case 0: *x = rx;                       *y = ry;                       break;
+        case 1: *x = ry;                       *y = (uint16_t)(W0 - 1 - rx);  break;
+        case 2: *x = (uint16_t)(W0 - 1 - rx);  *y = (uint16_t)(H0 - 1 - ry);  break;
+        case 3: *x = (uint16_t)(H0 - 1 - ry);  *y = rx;                       break;
+    }
+    return true;
 #else
     return tft.getTouch(x, y, KB_XPT_THRESHOLD);
 #endif
