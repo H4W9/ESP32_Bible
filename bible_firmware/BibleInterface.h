@@ -50,6 +50,7 @@
 #define RT_DISP_LEN        48     // book display name buffer (e.g. song title)
 #define RT_CODE_LEN        12     // osis code buffer (e.g. "S730", "SYM")
 #define RT_SEC_NAME_LEN    48     // section display name buffer (e.g. category)
+#define DICT_PAGE_LABEL_LEN 56    // "firstword - lastword" page label (Dictionary)
 #define BIBLE_SEARCH_QUERY_LEN  48    // max query length incl null
 #define BIBLE_SEARCH_HIST_MAX   10    // max history entries
 #define BIBLE_SRCH_SNIPPET_LEN   80   // max snippet bytes per result (incl null)
@@ -180,6 +181,9 @@ private:
     uint16_t rt_book_count;
     RtSec*   rt_secs;
     uint16_t rt_sec_count;
+    // Dictionary page index (labels "firstword - lastword") for the active letter.
+    char*    rt_pages;        // flat array of rt_page_count × DICT_PAGE_LABEL_LEN
+    uint16_t rt_page_count;
 
     // ── View state ────────────────────────────────────────────────────────
     BibleView view;
@@ -386,11 +390,14 @@ private:
     void handleSearchResultsInput();
 
     // ── Navigation helpers ────────────────────────────────────────────────
-    void applyOrientation();                // tft.setRotation per `orientation` (0/180°)
+    void applyOrientation();                // tft.setRotation per `orientation` (0-3)
+    void orientTouch(uint16_t& x, uint16_t& y) const; // map raw cap-touch to orientation
     void goToMainMenu();
     void enterMode(ContentMode m);          // switch namespace/paths/state, scan, route
     void selectTranslation(uint16_t idx);   // set cur_trans, load .toc (Songs/Dict), route
     bool loadToc(const char* stem);         // fill rt_books/rt_secs/book_offsets from <base>/<stem>.toc
+    bool loadDictPages(uint16_t book);      // fill rt_pages from <base>/<stem>.pgx for a letter
+    const char* pageLabel(uint16_t i) const;// dict page label, or "Page N" fallback
     void freeRuntime();                      // free rt_books/rt_secs/book_offsets
     void goToTransSelect();
     void goToSection();

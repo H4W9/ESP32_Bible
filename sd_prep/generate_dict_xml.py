@@ -252,6 +252,12 @@ def build_direction(entries, stem, label, out_dir, page):
 
     xml_path = os.path.join(out_dir, stem + ".xml")
     book_entries = []   # (code, display, chapters, offset)
+    pgx_lines  = []     # "code|page|firstword|lastword" — page index for the firmware
+
+    def pgw(x):         # page-label headword: drop dict.cc markup, no delimiters, short
+        x = x.replace("|", " ").replace("\t", " ").strip()
+        x = re.split(r"\s*[\{\[\<]", x, 1)[0].strip()   # cut gender/category/notes
+        return x[:18]
 
     with open(xml_path, "wb") as xf:
         def w(s):
@@ -276,11 +282,17 @@ def build_direction(entries, stem, label, out_dir, page):
             offset = xf.tell()       # first verse of this letter-book
             book_entries.append((code, BUCKET_DISP[b], chapters, offset))
 
+            pg_first = ""
             for i, (wd, df) in enumerate(rows):
                 chap = i // page + 1
                 vno = i % page + 1
+                if vno == 1:
+                    pg_first = wd
                 text = clip(f"{wd} - {df}", VERSE_MAX)
                 w(f'<verse osisID="{code}.{chap}.{vno}">{xml_escape(text)}</verse>\n')
+                # End of page (or last entry) → record the page's first/last word.
+                if vno == page or i == len(rows) - 1:
+                    pgx_lines.append(f"{code}|{chap}|{pgw(pg_first)}|{pgw(wd)}")
 
         w('</osis>\n')
 
@@ -289,6 +301,12 @@ def build_direction(entries, stem, label, out_dir, page):
         tf.write(f"S|{clip(label, DISPLAY_MAX)}\n")
         for code, disp, chapters, offset in book_entries:
             tf.write(f"B|{code}|{disp}|{chapters}|0|{offset}\n")
+
+    # Page index: lets the firmware list pages as "firstword - lastword".
+    pgx_path = os.path.join(out_dir, stem + ".pgx")
+    with open(pgx_path, "w", encoding="utf-8", newline="\n") as pf:
+        for line in pgx_lines:
+            pf.write(line + "\n")
 
     shutil.rmtree(tmp_dir, ignore_errors=True)
     print(f"  {stem:<12} {total:>9,} entries  {len(book_entries)} letter-books")

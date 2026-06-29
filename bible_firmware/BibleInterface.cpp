@@ -133,6 +133,10 @@ static const uint16_t FONT_COLOR_VAL[] = {
 };
 static const uint8_t FONT_COLOR_COUNT = 24;
 
+// Screen orientation options (global). 0/2 portrait, 1/3 landscape.
+static const char* const ORIENT_NAMES[4] = { "Normal", "Landscape", "Flip 180", "Land. Flip" };
+static const uint8_t ORIENT_COUNT = 4;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Section metadata
 // ─────────────────────────────────────────────────────────────────────────────
@@ -251,7 +255,7 @@ const BibleBook BibleInterface::BOOKS[BIBLE_BOOK_COUNT] = {
 BibleInterface::BibleInterface()
     : cur_sec(0), cur_book(0), cur_chapter(1), cur_trans(0),
       mode(MODE_BIBLE), rt_books(nullptr), rt_book_count(0),
-      rt_secs(nullptr), rt_sec_count(0),
+      rt_secs(nullptr), rt_sec_count(0), rt_pages(nullptr), rt_page_count(0),
       view(BV_MAIN_MENU), dark_mode(true), font_num(2), font_color_idx(0),
       vnum_color_idx(0), orientation(0), needs_redraw(true),
       menu_sel(0), menu_scroll(0), read_line(0),
@@ -300,8 +304,8 @@ void BibleInterface::RunSetup() {
     // calibration. Each content mode opens its own namespace in enterMode().
     prefs.begin("menu", false);
     orientation = prefs.getUChar("orient", 0);
-    if (orientation > 1) orientation = 0;
-    applyOrientation();                 // global 0°/180° — set before first draw
+    if (orientation > 3) orientation = 0;
+    applyOrientation();                 // global 0-3 orientation — set before first draw
     mode       = MODE_BIBLE;            // accessors unused at the menu; harmless default
     dark_mode  = prefs.getBool ("dark",   true);
     accent_idx = prefs.getUChar("accent", 0);
@@ -363,7 +367,10 @@ void BibleInterface::main(uint32_t currentTime) {
         case BV_TRANS_SELECT:    handleListInput(trans_count);          break;
         case BV_SECTION_SELECT:  handleListInput(numSecs());      break;
         case BV_BOOK_SELECT:     handleListInput(secLen(cur_sec)); break;
-        case BV_CHAPTER_SELECT:  handleChapterInput(); break;
+        case BV_CHAPTER_SELECT:
+            if (mode == MODE_DICT) handleListInput(rt_page_count);  // page list
+            else                   handleChapterInput();            // numeric grid
+            break;
         case BV_READING:         handleReadingInput();                  break;
         case BV_SETTINGS:        handleSettingsInput();                 break;
         case BV_BOOKMARKS:       handleBookmarksInput();                break;
@@ -392,19 +399,23 @@ uint16_t BibleInterface::font_fg() const {
 // ─────────────────────────────────────────────────────────────────────────────
 // Layout helpers
 // ─────────────────────────────────────────────────────────────────────────────
+// Native portrait panel size; swapped when orientation is landscape (1 or 3) so
+// the whole layout (which is driven by scrW()/scrH()) adapts automatically.
 uint16_t BibleInterface::scrW() const {
 #ifdef MARAUDER_PANCAKE
-    return 320;
+    const uint16_t pw = 320, ph = 480;
 #else
-    return 240;
+    const uint16_t pw = 240, ph = 320;
 #endif
+    return (orientation & 1) ? ph : pw;
 }
 uint16_t BibleInterface::scrH() const {
 #ifdef MARAUDER_PANCAKE
-    return 480;
+    const uint16_t pw = 320, ph = 480;
 #else
-    return 320;
+    const uint16_t pw = 240, ph = 320;
 #endif
+    return (orientation & 1) ? pw : ph;
 }
 
 uint16_t BibleInterface::lineH() const {
@@ -566,6 +577,9 @@ void BibleInterface::redrawListContent(uint16_t item_count) {
                 drawListRow(y, bookDisplay(secStart(cur_sec) + idx),
                             idx == (int16_t)menu_sel);
                 break;
+            case BV_CHAPTER_SELECT:   // Dictionary page list (smooth scroll)
+                drawListRow(y, pageLabel(idx), idx == (int16_t)menu_sel, false);
+                break;
             case BV_BOOKMARKS:
                 drawListRow(y, bookmarks[idx].label,
                             idx == (int16_t)bm_sel, false);
@@ -694,6 +708,18 @@ void BibleInterface::drawBookSelect() {
 void BibleInterface::drawChapterSelect() {
     tft.fillScreen(bg());
     drawHeader(bookDisplay(cur_book));
+
+    // Dictionary: a scrollable list of pages ("firstword - lastword").
+    if (mode == MODE_DICT) {
+        uint8_t vis = visItems();
+        for (uint8_t i = 0; i < vis && (menu_scroll + i) < (int16_t)rt_page_count; i++) {
+            bool sel = (menu_scroll + i) == (int16_t)menu_sel;
+            drawListRow(contentY() + i * itemH(), pageLabel(menu_scroll + i), sel, false);
+        }
+        drawScrollBar((int16_t)rt_page_count, vis, menu_scroll);
+        drawNavBar("Marks", "Settings", "Bright");
+        return;
+    }
 
     uint16_t  chaps    = bookChapters(cur_book);
     uint16_t tile_w   = scrW() / 5;
@@ -873,8 +899,11 @@ void BibleInterface::redrawSettingsContent() {
     if (menu_scroll > max_scroll) menu_scroll = max_scroll;
     if (menu_scroll < 0)          menu_scroll = 0;
 
-    // [<] Name [>] choice row used by Font Color / Verse # Color / Highlight.
-    auto choiceRow = [&](int16_t row_y, const char* label, const char* name, bool sel) {
+    // [<] Name [>] choice row. name_col = colour to draw the value text in
+    // (0 = default fg). Font/Verse colour rows pass the actual colour so the user
+    // previews it; Highlight passes 0 (its colour is already visible on screen).
+    auto choiceRow = [&](int16_t row_y, const char* label, const char* name,
+                         bool sel, uint16_t name_col) {
         drawListRow(row_y, label, sel, false);
         uint16_t bg_c  = sel ? sel_bg() : bg();
         int16_t  btn_y = row_y + (itemH() - btn_h) / 2;
@@ -887,7 +916,7 @@ void BibleInterface::redrawSettingsContent() {
         tft.drawCentreString(">", fwd_bx + btn_w / 2, txt_y, 2);
         int16_t nam_w = (int16_t)tft.textWidth(name, 2);
         int16_t nam_x = fwd_bx - 4 - nam_w;
-        tft.setTextColor(fg(), bg_c);
+        tft.setTextColor(name_col ? name_col : fg(), bg_c);
         tft.drawString(name, nam_x, nam_y, 2);
         int16_t bwd_bx = nam_x - 4 - btn_w;
         tft.fillRoundRect(bwd_bx, btn_y, btn_w, btn_h, btn_r, hdr_bg());
@@ -902,9 +931,10 @@ void BibleInterface::redrawSettingsContent() {
             row_y + (int16_t)itemH() > (int16_t)(contentY() + contentH())) continue;
         bool sel = (i == (int16_t)menu_sel);
 
-        if (i == 1) { choiceRow(row_y, "Font Color",   FONT_COLOR_NAMES[font_color_idx], sel); continue; }
-        if (i == 2) { choiceRow(row_y, "Verse # Color", FONT_COLOR_NAMES[vnum_color_idx], sel); continue; }
-        if (i == 6) { choiceRow(row_y, "Highlight",     ACCENT_NAMES[accent_idx],        sel); continue; }
+        if (i == 1) { choiceRow(row_y, "Font Color",    FONT_COLOR_NAMES[font_color_idx], sel, font_fg());       continue; }
+        if (i == 2) { choiceRow(row_y, "Verse # Color", FONT_COLOR_NAMES[vnum_color_idx], sel, verse_num_fg()); continue; }
+        if (i == 6) { choiceRow(row_y, "Highlight",     ACCENT_NAMES[accent_idx],         sel, 0);              continue; }
+        if (i == 7) { choiceRow(row_y, "Orientation",   ORIENT_NAMES[orientation & 3],    sel, 0);              continue; }
 
         if (i == 4) {
             // Brightness row: "Brightness" label + [-] X/20 [+] buttons.
@@ -943,8 +973,6 @@ void BibleInterface::redrawSettingsContent() {
                            : (mode == MODE_DICT)  ? "Dictionary" : "Translation";
             snprintf(buf, sizeof(buf), "%s: %s", tl,
                      trans_count > 0 ? trans_stems[cur_trans] : "-");
-        } else if (i == 7) {
-            snprintf(buf, sizeof(buf), "Orientation: %s", orientation ? "Flipped" : "Normal");
         } else if (i == 8) {
             strncpy(buf, "Boot OTA_1", sizeof(buf) - 1); buf[sizeof(buf) - 1] = 0;
 #ifndef HAS_CAP_TOUCH
@@ -1039,10 +1067,10 @@ bool BibleInterface::getTouch(uint16_t* tx, uint16_t* ty) {
     uint16_t raw_x, raw_y;
     uint8_t touches = ft6336_update(&raw_x, &raw_y);
     if (touches == 0) { last_pressed = false; return false; }
-    // FT6336 returns coordinates in panel orientation; flip for 180° orientation.
+    // FT6336 returns panel-native coords; map to the active orientation.
     *tx = raw_x;
     *ty = raw_y;
-    if (orientation == 1) { *tx = scrW() - 1 - *tx; *ty = scrH() - 1 - *ty; }
+    orientTouch(*tx, *ty);
 #else
     uint16_t cal[5] = {0,0,0,0,0}; // use default calibration
     (void)cal;
@@ -1061,8 +1089,7 @@ bool BibleInterface::pollTouch(uint16_t* tx, uint16_t* ty) {
     uint16_t raw_x, raw_y;
     if (!ft6336_update(&raw_x, &raw_y)) { last_pressed = false; return false; }
     *tx = raw_x; *ty = raw_y;
-    // FT6336 reports panel-native coords; flip them for 180° orientation.
-    if (orientation == 1) { *tx = scrW() - 1 - *tx; *ty = scrH() - 1 - *ty; }
+    orientTouch(*tx, *ty);   // map panel-native coords to the active orientation
 #else
     // Resistive: TFT_eSPI getTouch() already maps through the active setRotation.
     if (!tft.getTouch(tx, ty, 600)) { last_pressed = false; return false; }
@@ -1591,13 +1618,19 @@ void BibleInterface::handleSettingsInput() {
                 prefs.putUChar("accent", accent_idx);
                 redrawSettingsContent();
                 break;
-            case 7: // Orientation (global) — flip 180°; saved in the "menu" namespace
-                orientation = orientation ? 0 : 1;
+            case 7: // Orientation (global) — [>] next, [<] prev through 0-3
+                if ((int16_t)touch_down_x >= (int16_t)scrW() - 32)
+                    orientation = (uint8_t)((orientation + 1) % ORIENT_COUNT);
+                else
+                    orientation = (orientation == 0) ? ORIENT_COUNT - 1 : orientation - 1;
                 {
                     Preferences mp;
                     if (mp.begin("menu", false)) { mp.putUChar("orient", orientation); mp.end(); }
                 }
                 applyOrientation();
+                // Re-wrap any cached chapter for the new width so reading stays correct.
+                if (cached_count > 0) buildWrappedLines();
+                menu_scroll = 0;
                 drawSettings();   // full repaint in the new orientation
                 return;
             case 8: // Boot Marauder
@@ -1795,6 +1828,27 @@ void BibleInterface::goToChapter(uint16_t book) {
     // Single-chapter books (each Song is one chapter) skip the chapter grid and
     // open the reader directly.
     if (bookChapters(book) <= 1) { goToReading(1); return; }
+
+    // Dictionary: show a scrollable list of pages ("firstword - lastword") instead
+    // of the numeric grid — reads more like a dictionary.
+    if (mode == MODE_DICT) {
+        loadDictPages(book);
+        view = BV_CHAPTER_SELECT;
+        int16_t sel = (int16_t)cur_chapter - 1;       // page index (0-based)
+        if (sel < 0 || sel >= (int16_t)rt_page_count) sel = 0;
+        menu_sel    = sel;
+        menu_scroll = 0;
+        if (sel >= (int16_t)visItems()) {
+            int16_t mid   = sel - (int16_t)(visItems() / 2);
+            int16_t max_s = (int16_t)rt_page_count - (int16_t)visItems();
+            menu_scroll   = (mid > max_s) ? max_s : mid;
+            if (menu_scroll < 0) menu_scroll = 0;
+        }
+        scroll_px    = (float)menu_scroll * (float)itemH();
+        needs_redraw = true;
+        return;
+    }
+
     view     = BV_CHAPTER_SELECT;
     // Scroll grid to show cur_chapter
     const uint16_t tile_h   = 36;
@@ -1852,9 +1906,25 @@ void BibleInterface::goToBookmarks() {
 // Mode-parameterized SD paths and NVS namespace
 // ─────────────────────────────────────────────────────────────────────────────
 void BibleInterface::applyOrientation() {
-    // Only 0° and 180° are supported (both keep portrait dimensions used by the
-    // whole layout). 90/270 would swap scrW/scrH and break every screen.
-    tft.setRotation(orientation ? 2 : 0);
+    // 0 = Normal · 1 = Landscape · 2 = Flip 180 · 3 = Landscape flipped.
+    // scrW()/scrH() track this so all layout adapts; setRotation maps 1:1.
+    tft.setRotation(orientation & 3);
+}
+
+// Map a raw cap-touch point (native portrait frame) to the active orientation.
+void BibleInterface::orientTouch(uint16_t& x, uint16_t& y) const {
+#ifdef MARAUDER_PANCAKE
+    const uint16_t NW = 320, NH = 480;
+#else
+    const uint16_t NW = 240, NH = 320;
+#endif
+    uint16_t rx = x, ry = y;
+    switch (orientation & 3) {
+        case 0: x = rx;                       y = ry;                       break;
+        case 1: x = ry;                       y = (uint16_t)(NW - 1 - rx);  break;
+        case 2: x = (uint16_t)(NW - 1 - rx);  y = (uint16_t)(NH - 1 - ry);  break;
+        case 3: x = (uint16_t)(NH - 1 - ry);  y = rx;                       break;
+    }
 }
 
 const char* BibleInterface::basePath() const {
@@ -1918,7 +1988,58 @@ void BibleInterface::freeRuntime() {
     if (rt_books)     { free(rt_books);     rt_books     = nullptr; }
     if (rt_secs)      { free(rt_secs);      rt_secs      = nullptr; }
     if (book_offsets) { free(book_offsets); book_offsets = nullptr; }
-    rt_book_count = 0; rt_sec_count = 0; book_offsets_cap = 0;
+    if (rt_pages)     { free(rt_pages);     rt_pages     = nullptr; }
+    rt_book_count = 0; rt_sec_count = 0; book_offsets_cap = 0; rt_page_count = 0;
+}
+
+// Dictionary: load the "firstword - lastword" labels for `book`'s pages from the
+// generated <stem>.pgx. Falls back to "Page N" labels if the file is absent.
+const char* BibleInterface::pageLabel(uint16_t i) const {
+    if (rt_pages && i < rt_page_count) return rt_pages + (size_t)i * DICT_PAGE_LABEL_LEN;
+    return "";
+}
+
+bool BibleInterface::loadDictPages(uint16_t book) {
+    if (rt_pages) { free(rt_pages); rt_pages = nullptr; }
+    rt_page_count = 0;
+    if (book >= numBooks()) return false;
+    uint16_t npages = bookChapters(book);
+    if (npages == 0) npages = 1;
+
+    rt_pages = (char*)RT_MALLOC((size_t)npages * DICT_PAGE_LABEL_LEN);
+    if (!rt_pages) return false;
+    rt_page_count = npages;
+    for (uint16_t p = 0; p < npages; p++)              // default labels
+        snprintf(rt_pages + (size_t)p * DICT_PAGE_LABEL_LEN, DICT_PAGE_LABEL_LEN,
+                 "Page %d", p + 1);
+
+    char path[80];
+    snprintf(path, sizeof(path), "%s/%s.pgx", basePath(), trans_stems[cur_trans]);
+    File f = SD.open(path);
+    if (!f) return true;                              // fall back to "Page N"
+
+    const char* code = bookCode(book);
+    size_t clen = strlen(code);
+    while (f.available()) {
+        String line = f.readStringUntil('\n');
+        line.trim();
+        // Match "<code>|..." exactly (code is a single letter / NUM / SYM).
+        if ((size_t)line.length() < clen + 1) continue;
+        if (strncmp(line.c_str(), code, clen) != 0 || line[clen] != '|') continue;
+        int p1 = clen;                                // the '|' after code
+        int p2 = line.indexOf('|', p1 + 1);
+        int p3 = (p2 >= 0) ? line.indexOf('|', p2 + 1) : -1;
+        if (p2 < 0 || p3 < 0) continue;
+        uint16_t pg = (uint16_t)line.substring(p1 + 1, p2).toInt();
+        if (pg < 1 || pg > npages) continue;
+        String first = line.substring(p2 + 1, p3);
+        String last  = line.substring(p3 + 1);
+        char* dst = rt_pages + (size_t)(pg - 1) * DICT_PAGE_LABEL_LEN;
+        snprintf(dst, DICT_PAGE_LABEL_LEN, "%s - %s", first.c_str(), last.c_str());
+        utf8Encode(dst);                              // render any umlauts
+    }
+    f.close();
+    return true;
 }
 
 // Load <base>/<stem>.toc into rt_books[], rt_secs[] and book_offsets[].
@@ -2122,7 +2243,7 @@ void BibleInterface::enterMode(ContentMode m) {
 
     prefs.begin(nvsNamespace(), false);
     loadState();                          // per-mode font/dark/accent/position/search
-    blSet(prefs.getUChar("bright", 19));  // per-mode brightness (no re-attach)
+    // Brightness is global (set once at boot in blInit) — no per-mode re-apply.
     loadBookmarks();
     loadSearchHistory();
     scanTranslations();
@@ -2267,8 +2388,16 @@ void BibleInterface::addBookmarkCurrent() {
     bm.trans       = cur_trans;   // used by Songs/Dict (book index is per-file)
 
     if (sel_verse_first > 0) {
-        // Verse / range bookmark
-        if (sel_verse_first == sel_verse_last)
+        // Verse / range bookmark. Songs are single-chapter, so drop the chapter
+        // number (e.g. "Title  v3" instead of "Title 1:3").
+        if (mode == MODE_SONGS) {
+            if (sel_verse_first == sel_verse_last)
+                snprintf(bm.label, BIBLE_BM_LABEL_LEN, "%s  v%d",
+                         bookDisplay(cur_book), sel_verse_first);
+            else
+                snprintf(bm.label, BIBLE_BM_LABEL_LEN, "%s  v%d-%d",
+                         bookDisplay(cur_book), sel_verse_first, sel_verse_last);
+        } else if (sel_verse_first == sel_verse_last)
             snprintf(bm.label, BIBLE_BM_LABEL_LEN, "%s %d:%d",
                      bookDisplay(cur_book), cur_chapter, sel_verse_first);
         else
@@ -2290,9 +2419,12 @@ void BibleInterface::addBookmarkCurrent() {
             }
         }
     } else {
-        // Whole-chapter bookmark
-        snprintf(bm.label, BIBLE_BM_LABEL_LEN, "%s %d",
-                 bookDisplay(cur_book), cur_chapter);
+        // Whole-chapter bookmark (songs: just the title — they are single-chapter)
+        if (mode == MODE_SONGS)
+            snprintf(bm.label, BIBLE_BM_LABEL_LEN, "%s", bookDisplay(cur_book));
+        else
+            snprintf(bm.label, BIBLE_BM_LABEL_LEN, "%s %d",
+                     bookDisplay(cur_book), cur_chapter);
         for (uint8_t i = 0; i < bm_count; i++) {
             if (bookmarks[i].book == cur_book && bookmarks[i].chapter == cur_chapter
                     && bookmarks[i].verse_first == 0
@@ -3276,7 +3408,10 @@ void BibleInterface::saveBookIndex(const char* stem) {
 // Brightness
 // ─────────────────────────────────────────────────────────────────────────────
 void BibleInterface::blInit() {
-    bl_idx = prefs.getUChar("bright", 19);
+    // Brightness is GLOBAL (one value for the whole firmware), stored in the "menu"
+    // namespace regardless of which mode adjusts it.
+    bl_idx = 10;
+    { Preferences mp; if (mp.begin("menu", true)) { bl_idx = mp.getUChar("bright", 10); mp.end(); } }
     if (bl_idx >= 20) bl_idx = 19;
 #ifndef HAS_MINI_SCREEN
   #if ESP_ARDUINO_VERSION_MAJOR >= 3
@@ -3296,7 +3431,7 @@ void BibleInterface::blInit() {
 void BibleInterface::blSet(uint8_t idx) {
     if (idx >= 20) idx = 19;
     bl_idx = idx;
-    prefs.putUChar("bright", bl_idx);
+    { Preferences mp; if (mp.begin("menu", false)) { mp.putUChar("bright", bl_idx); mp.end(); } }
 #ifndef HAS_MINI_SCREEN
   #if ESP_ARDUINO_VERSION_MAJOR >= 3
     ledcWrite(TFT_BL, BL_LEVELS[bl_idx]);
