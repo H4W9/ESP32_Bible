@@ -408,16 +408,17 @@ void BibleInterface::drawHeader(const char* title, bool show_back) {
     tft.drawCentreString(title, scrW()/2, 6, 2);
 
     // Search button — same bordered-box style as the back button.
+    // Hidden on the main menu (there is no content to search there).
     // Positioned to the left of the battery % text.
-    // Battery: right-aligned at scrW()-3, max ~28px wide → left edge ~scrW()-31.
-    // Button: 28px wide, 4px gap → right edge scrW()-35, left edge scrW()-63.
-    int16_t sb_x = (int16_t)scrW() - 63;
-    tft.fillRoundRect(sb_x,     3, 28, 22, 4, hdr_bg());
-    tft.drawRoundRect(sb_x,     3, 28, 22, 4, dim_fg());
-    // Magnifying glass inside the button (circle + diagonal handle)
-    int16_t cx = sb_x + 13;   // horizontal centre of button
-    tft.drawCircle(cx,     14, 5, TFT_WHITE);
-    tft.drawLine  (cx + 4, 18, cx + 7, 21, TFT_WHITE);
+    if (view != BV_MAIN_MENU) {
+        int16_t sb_x = (int16_t)scrW() - 63;
+        tft.fillRoundRect(sb_x,     3, 28, 22, 4, hdr_bg());
+        tft.drawRoundRect(sb_x,     3, 28, 22, 4, dim_fg());
+        // Magnifying glass inside the button (circle + diagonal handle)
+        int16_t cx = sb_x + 13;   // horizontal centre of button
+        tft.drawCircle(cx,     14, 5, TFT_WHITE);
+        tft.drawLine  (cx + 4, 18, cx + 7, 21, TFT_WHITE);
+    }
 
 #ifdef HAS_BATTERY
     if (batt_pct >= 0) {
@@ -1754,6 +1755,7 @@ void BibleInterface::drawLoading() {
     drawHeader(hdr);
     tft.setTextColor(dim_fg(), bg());
     tft.drawCentreString("Loading...", scrW() / 2, contentY() + contentH() / 2 - 8, 2);
+    drawMemUsage((int16_t)(contentY() + contentH() / 2 + 16));
 }
 
 void BibleInterface::goToReading(uint16_t chapter, int16_t start_line) {
@@ -2438,33 +2440,62 @@ void BibleInterface::xmlDecodeEntities(char* buf, size_t len) {
 // All other unrecognised multi-byte sequences: lead byte is kept, trail byte dropped.
 // Uses read/write pointers so no additional buffer is needed.
 void BibleInterface::utf8Encode(char* buf) {
-    static const struct { uint8_t b1, b2, code; } map[] = {
-        { 0xC3, 0x84, 0x80 },  // Ä
-        { 0xC3, 0xA4, 0x81 },  // ä
-        { 0xC3, 0x96, 0x82 },  // Ö
-        { 0xC3, 0xB6, 0x83 },  // ö
-        { 0xC3, 0x9C, 0x84 },  // Ü
-        { 0xC3, 0xBC, 0x85 },  // ü
-    };
     char* r = buf;
     char* w = buf;
     while (*r) {
-        uint8_t b = (uint8_t)*r;
-        if (b >= 0x80 && r[1]) {
-            // ß → private code 0x86 (2 UTF-8 bytes → 1 private byte)
-            if (b == 0xC3 && (uint8_t)r[1] == 0x9F) {
-                *w++ = (char)0x86; r += 2; continue;
+        uint8_t b  = (uint8_t)*r;
+        uint8_t b1 = (b >= 0x80) ? (uint8_t)r[1] : 0;   // 0 if string ends early
+        uint8_t b2 = (b >= 0xE0 && b1) ? (uint8_t)r[2] : 0;
+
+        if (b < 0x80) { *w++ = *r++; continue; }         // plain ASCII
+
+        // ── 2-byte: Latin-1 supplement (0xC2/0xC3) ────────────────────────────
+        if (b == 0xC3 && b1) {
+            switch (b1) {
+                case 0x84: *w++ = (char)0x80; break;     // Ä
+                case 0xA4: *w++ = (char)0x81; break;     // ä
+                case 0x96: *w++ = (char)0x82; break;     // Ö
+                case 0xB6: *w++ = (char)0x83; break;     // ö
+                case 0x9C: *w++ = (char)0x84; break;     // Ü
+                case 0xBC: *w++ = (char)0x85; break;     // ü
+                case 0x9F: *w++ = (char)0x86; break;     // ß
+                default:   /* other accented Latin — drop */ break;
             }
-            bool found = false;
-            for (uint8_t i = 0; i < 6; i++) {
-                if (b == map[i].b1 && (uint8_t)r[1] == map[i].b2) {
-                    *w++ = (char)map[i].code; r += 2; found = true; break;
-                }
-            }
-            if (!found) *w++ = *r++;   // unknown sequence: keep lead byte
-        } else {
-            *w++ = *r++;
+            r += 2; continue;
         }
+        if (b == 0xC2 && b1) {
+            if      (b1 == 0xA0) *w++ = ' ';             // non-breaking space
+            else if (b1 == 0xB4) *w++ = '\'';            // ´ acute accent
+            /* else (©, °, …) drop */
+            r += 2; continue;
+        }
+
+        // ── 3-byte: punctuation (0xE2 …) mapped to ASCII equivalents ──────────
+        if (b == 0xE2 && b1 && b2) {
+            if (b1 == 0x80) {
+                switch (b2) {
+                    case 0x98: case 0x99: case 0x9A: case 0x9B:
+                        *w++ = '\''; break;                       // ‘ ’ ‚ ‛
+                    case 0x9C: case 0x9D: case 0x9E: case 0x9F:
+                        *w++ = '"';  break;                       // “ ” „ ‟
+                    case 0x90: case 0x91: case 0x93: case 0x94: case 0x95:
+                        *w++ = '-';  break;                       // ‐ ‑ – — ―
+                    case 0xA6: *w++ = '.'; *w++ = '.'; *w++ = '.'; break;  // …
+                    case 0xA2: *w++ = '*';  break;                // • bullet
+                    case 0xAF: *w++ = ' ';  break;                // narrow nbsp
+                    default: break;                               // zwsp etc. drop
+                }
+            } else if (b1 == 0x88 && b2 == 0x92) {
+                *w++ = '-';                                       // − minus sign
+            }
+            r += 3; continue;
+        }
+
+        // ── Any other multibyte sequence: drop it whole (never leak a byte) ────
+        if (b >= 0xF0)      r += (r[1] && r[2] && r[3]) ? 4 : 1;  // 4-byte
+        else if (b >= 0xE0) r += (b1 && b2) ? 3 : 1;             // 3-byte
+        else if (b >= 0xC0) r += b1 ? 2 : 1;                     // 2-byte
+        else                r += 1;                              // stray continuation
     }
     *w = 0;
 }
@@ -3545,6 +3576,28 @@ void BibleInterface::drawSearchResults() {
 // Progress bar drawn during searchBible() — called ~every 8 KB of XML read.
 // The border is drawn only on the first call (done==0) to avoid repainting gray
 // over the bar interior on every update, which caused a strobing gray flash.
+// Small live "DRAM: NN%  PSRAM: NN%" readout (used% of each pool), centred at y.
+void BibleInterface::drawMemUsage(int16_t y) {
+    uint32_t dtot = ESP.getHeapSize();
+    uint32_t dfree = ESP.getFreeHeap();
+    int dpct = (dtot > 0) ? (int)(100UL * (dtot - dfree) / dtot) : 0;
+
+    char buf[40];
+#ifdef HAS_PSRAM
+    uint32_t ptot = ESP.getPsramSize();
+    uint32_t pfree = ESP.getFreePsram();
+    int ppct = (ptot > 0) ? (int)(100UL * (ptot - pfree) / ptot) : 0;
+    if (ptot > 0) snprintf(buf, sizeof(buf), "D-RAM: %d%%   PSRAM: %d%%", dpct, ppct);
+    else          snprintf(buf, sizeof(buf), "D-RAM: %d%%   PSRAM: n/a", dpct);
+#else
+    snprintf(buf, sizeof(buf), "D-RAM: %d%%", dpct);
+#endif
+    // Repaint a clean strip so the value updates in place without ghosting.
+    tft.fillRect(0, y, scrW(), 10, bg());
+    tft.setTextColor(dim_fg(), bg());
+    tft.drawCentreString(buf, scrW() / 2, y, 1);
+}
+
 void BibleInterface::drawSearchProgress(uint32_t done, uint32_t total) {
     int16_t bar_x = 10;
     int16_t bar_y = (int16_t)(contentY() + contentH() / 2 + 8);
@@ -3576,6 +3629,9 @@ void BibleInterface::drawSearchProgress(uint32_t done, uint32_t total) {
         snprintf(pct, sizeof(pct), "...");
     tft.setTextColor(fg(), bg());
     tft.drawCentreString(pct, scrW() / 2, bar_y + bar_h + 2, 1);
+
+    // Live memory usage near the top of the content area (updates every call).
+    drawMemUsage((int16_t)contentY() + 4);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

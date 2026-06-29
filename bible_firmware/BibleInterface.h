@@ -299,6 +299,7 @@ private:
     void drawSearchResults();
     void drawSearchResultRow(int16_t y_px, uint16_t idx, bool sel); // one search result row
     void drawSearchProgress(uint32_t done, uint32_t total);
+    void drawMemUsage(int16_t y);   // live DRAM/PSRAM usage on loading/search screens
 
     void drawListRow(int16_t y_px, const char* text, bool selected, bool has_arrow = true);
     void redrawListContent(uint16_t item_count); // partial redraw during scroll (no header/nav)

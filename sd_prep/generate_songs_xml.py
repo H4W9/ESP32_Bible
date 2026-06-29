@@ -57,13 +57,12 @@ ACCENT_BASE = {
     'ó':'o','ò':'o','ô':'o','õ':'o','ō':'o','ø':'o',
     'ú':'u','ù':'u','û':'u','ū':'u','ý':'y','ÿ':'y',
 }
-# Common typography → ASCII so songs read cleanly.
-TYPO = {
-    '‘':"'", '’':"'", '‚':"'", '‛':"'", '´':"'", '`':"'",
-    '“':'"', '”':'"', '„':'"', '‟':'"',
-    '–':'-', '—':'-', '−':'-', '‐':'-', '‑':'-',
-    '…':'...', ' ':' ', ' ':' ', '​':'',
-}
+# Typographic marks kept as-is in the XML — the firmware renders them (it maps
+# each to its ASCII equivalent at draw time: single/double curly quotes -> ' ",
+# en/em dash -> -, ellipsis -> ...).
+KEEP_TYPO = set("‘’‚‛“”„‟–—−‐‑…•´")
+# Whitespace variants normalised to a plain space (or dropped).
+SPACE_MAP = {" ": " ", " ": " ", " ": " ", "​": ""}
 
 
 def sanitize_text(s: str) -> str:
@@ -72,8 +71,10 @@ def sanitize_text(s: str) -> str:
     for ch in s:
         if ch in KEEP_UMLAUT:
             out.append(ch)
-        elif ch in TYPO:
-            out.append(TYPO[ch])
+        elif ch in SPACE_MAP:
+            out.append(SPACE_MAP[ch])
+        elif ch in KEEP_TYPO:
+            out.append(ch)
         elif ord(ch) < 128:
             out.append(ch)
         elif ch in ACCENT_BASE:
