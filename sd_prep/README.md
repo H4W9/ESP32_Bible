@@ -216,7 +216,17 @@ python make_splash.py esp32c5.png --board pancake --cx 0.62 --cy 0.48
 ```
 
 Copy the result to the **SD card root** as `\splash.raw`. If it's absent, boot just skips the
-splash. (If colors look swapped, tell me — it's a one-line byte-order flip in the firmware.)
+splash.
+
+The splash is shown at the **active screen orientation**. A portrait file covers 0° and 180°
+(it auto-flips for 180°); for a landscape orientation (90°/270°) make a landscape file:
+```cmd
+python make_splash.py esp32c5.png --board pancake --landscape
+```
+If the file size doesn't match the current orientation, the splash is simply skipped.
+
+Colour-correction flags (the splash should match the rest of the UI's colours): `--bgr`
+(red/blue swap), `--invert` (photo negative), `--swap` (byte order). Combine as needed.
 
 ## Final SD card layout
 

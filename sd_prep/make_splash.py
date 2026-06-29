@@ -65,6 +65,12 @@ def main():
     ap.add_argument("--cx", type=float, default=0.62, help="crop centre X (0..1)")
     ap.add_argument("--cy", type=float, default=0.48, help="crop centre Y (0..1)")
     ap.add_argument("--out", default="splash.raw", help="output file (default splash.raw)")
+    # Colour-correction toggles (if the splash looks wrong on your panel):
+    ap.add_argument("--bgr",    action="store_true", help="swap red/blue (BGR panel)")
+    ap.add_argument("--invert", action="store_true", help="invert colours (photo negative)")
+    ap.add_argument("--swap",   action="store_true", help="little-endian byte order")
+    ap.add_argument("--landscape", action="store_true",
+                    help="size for a landscape orientation (swaps W/H)")
     args = ap.parse_args()
 
     if args.w and args.h:
@@ -73,21 +79,29 @@ def main():
         W, H = BOARD_SIZE[args.board]
     else:
         sys.exit("Specify --board (pancake/v8/v6) or both --w and --h.")
+    if args.landscape:
+        W, H = H, W   # the firmware shows the splash at the active rotation's size
 
     img = Image.open(args.input).convert("RGB")
     img = crop_to_aspect(img, W, H, args.cx, args.cy)
     img = img.resize((W, H), Image.LANCZOS)
 
+    fmt = "<H" if args.swap else ">H"     # firmware default expects big-endian
     with open(args.out, "wb") as f:
         for y in range(H):
             for x in range(W):
                 r, g, b = img.getpixel((x, y))
+                if args.bgr:
+                    r, b = b, r
                 v = ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3)
-                f.write(struct.pack(">H", v))   # big-endian (firmware uses setSwapBytes(true))
+                if args.invert:
+                    v = (~v) & 0xFFFF
+                f.write(struct.pack(fmt, v))
 
     print(f"Wrote {args.out}  ({W}x{H}, {W*H*2:,} bytes)")
     print(f"Copy it to the SD card root as  /splash.raw")
     print(f"Tip: adjust --cx/--cy to re-centre the crop on the chip.")
+    print(f"If colours look wrong, re-run adding --bgr (red/blue), --invert, or --swap.")
 
 
 if __name__ == "__main__":
