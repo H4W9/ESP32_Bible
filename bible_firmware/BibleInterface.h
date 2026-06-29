@@ -383,6 +383,10 @@ private:
     // ── Touch input ───────────────────────────────────────────────────────
     bool     getTouch(uint16_t* tx, uint16_t* ty);
     bool     pollTouch(uint16_t* tx, uint16_t* ty);  // raw, no debounce
+#ifndef HAS_CAP_TOUCH
+    uint16_t cal_data[5];                  // active resistive calibration (portrait, rotation 0)
+    bool     resistiveTouch(uint16_t* x, uint16_t* y); // raw→portrait→orientation map
+#endif
     bool     touchInHeader(uint16_t x, uint16_t y);
     bool     touchInNav(uint16_t x, uint16_t y);
     int16_t  touchItem(uint16_t x, uint16_t y);

@@ -360,6 +360,7 @@ void BibleInterface::RunSetup() {
         uint16_t calData[5];
         prefs.getBytes("tcald2", calData, sizeof(calData));
         tft.setTouch(calData);
+        memcpy(cal_data, calData, sizeof(cal_data));   // for manual orientation mapping
     } else {
         runTouchCalibration();
     }
@@ -368,6 +369,7 @@ void BibleInterface::RunSetup() {
     {
         uint16_t calData[5] = { 312, 3431, 191, 3456, 2 };
         tft.setTouch(calData);
+        memcpy(cal_data, calData, sizeof(cal_data));   // for manual orientation mapping
     }
 #endif
 
@@ -1270,9 +1272,7 @@ bool BibleInterface::getTouch(uint16_t* tx, uint16_t* ty) {
     *ty = raw_y;
     orientTouch(*tx, *ty);
 #else
-    uint16_t cal[5] = {0,0,0,0,0}; // use default calibration
-    (void)cal;
-    if (!tft.getTouch(tx, ty, 600)) { last_pressed = false; return false; }
+    if (!resistiveTouch(tx, ty)) { last_pressed = false; return false; }
 #endif
     uint32_t now = millis();
     if (last_pressed && (now - last_input_ms) < 200) return false;
@@ -1289,8 +1289,7 @@ bool BibleInterface::pollTouch(uint16_t* tx, uint16_t* ty) {
     *tx = raw_x; *ty = raw_y;
     orientTouch(*tx, *ty);   // map panel-native coords to the active orientation
 #else
-    // Resistive: TFT_eSPI getTouch() already maps through the active setRotation.
-    if (!tft.getTouch(tx, ty, 600)) { last_pressed = false; return false; }
+    if (!resistiveTouch(tx, ty)) { last_pressed = false; return false; }
 #endif
     last_pressed  = true;
     last_input_ms = millis();
@@ -1313,6 +1312,11 @@ void BibleInterface::runTouchCalibration() {
 #else
     ledcWrite(0, 255);
 #endif
+    // Always calibrate in PORTRAIT (rotation 0) so the stored calibration is
+    // orientation-independent; touch is then rotated in software (resistiveTouch).
+    uint8_t saved_ori = orientation;
+    orientation = 0;
+    applyOrientation();
 
     bool success = false;
     while (!success) {
@@ -1327,6 +1331,7 @@ void BibleInterface::runTouchCalibration() {
         uint16_t calData[5];
         tft.calibrateTouch(calData, TFT_WHITE, TFT_BLACK, 15);
         tft.setTouch(calData);  // apply immediately for verification
+        memcpy(cal_data, calData, sizeof(cal_data));  // for manual orientation mapping
 
         // ── Verification: tap the green circle ───────────────────────────
         int16_t cx = scrW() / 2;
@@ -1360,7 +1365,9 @@ void BibleInterface::runTouchCalibration() {
         }
     }
 
-    // Restore user's saved brightness level.
+    // Restore orientation and the user's saved brightness level.
+    orientation = saved_ori;
+    applyOrientation();
     blSet(bl_idx);
     tft.fillScreen(bg());
 }
@@ -2140,6 +2147,32 @@ void BibleInterface::applyOrientation() {
 }
 
 // Map a raw cap-touch point (native portrait frame) to the active orientation.
+#ifndef HAS_CAP_TOUCH
+// Resistive (XPT2046): read raw ADC, map to native portrait using the stored
+// calibration (rotation 0), then rotate to the active orientation. This avoids
+// TFT_eSPI's per-rotation getTouch() calibration, which breaks when the screen
+// is rotated after a single (portrait) calibration.
+bool BibleInterface::resistiveTouch(uint16_t* x, uint16_t* y) {
+    if (tft.getTouchRawZ() < 600) return false;        // pressure threshold
+    uint16_t rx = 0, ry = 0;
+    tft.getTouchRaw(&rx, &ry);
+    const int32_t NW = 240, NH = 320;                  // native portrait (ILI9341)
+    int32_t x0 = cal_data[0], x1 = cal_data[1] ? cal_data[1] : 1;
+    int32_t y0 = cal_data[2], y1 = cal_data[3] ? cal_data[3] : 1;
+    int32_t px, py;
+    if (!(cal_data[4] & 0x01)) { px = ((int32_t)rx - x0) * NW / x1; py = ((int32_t)ry - y0) * NH / y1; }
+    else                       { px = ((int32_t)ry - x0) * NW / x1; py = ((int32_t)rx - y0) * NH / y1; }
+    if (cal_data[4] & 0x02) px = NW - px;
+    if (cal_data[4] & 0x04) py = NH - py;
+    if (px < 0) px = 0; if (px >= NW) px = NW - 1;
+    if (py < 0) py = 0; if (py >= NH) py = NH - 1;
+    uint16_t fx = (uint16_t)px, fy = (uint16_t)py;
+    orientTouch(fx, fy);                               // portrait → active orientation
+    *x = fx; *y = fy;
+    return true;
+}
+#endif
+
 void BibleInterface::orientTouch(uint16_t& x, uint16_t& y) const {
 #ifdef MARAUDER_PANCAKE
     const uint16_t NW = 320, NH = 480;
