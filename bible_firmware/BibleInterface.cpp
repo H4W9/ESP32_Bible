@@ -271,7 +271,7 @@ const BibleBook BibleInterface::BOOKS[BIBLE_BOOK_COUNT] = {
 BibleInterface::BibleInterface()
     : cur_sec(0), cur_book(0), cur_chapter(1), cur_trans(0),
       mode(MODE_BIBLE), rt_books(nullptr), rt_book_count(0),
-      rt_secs(nullptr), rt_sec_count(0), rt_pages(nullptr), rt_page_count(0),
+      rt_secs(nullptr), rt_sec_count(0), rt_pages(nullptr), rt_page_count(0), rt_pages_book(0xFFFF),
       view(BV_MAIN_MENU), dark_mode(true), theme_idx(0), font_num(2), font_color_idx(0),
       vnum_color_idx(0), orientation(0), needs_redraw(true),
       menu_sel(0), menu_scroll(0), read_line(0),
@@ -449,6 +449,10 @@ uint8_t BibleInterface::visLines() const { return contentH() / lineH(); }
 // ─────────────────────────────────────────────────────────────────────────────
 // Drawing — shared elements
 // ─────────────────────────────────────────────────────────────────────────────
+// Forward decl: UTF-8-aware glyph draw (defined below; used by drawHeader title).
+static int16_t tftCharUTF8(TFT_eSPI& tft, uint8_t c, int16_t x, int16_t y,
+                           uint8_t font, uint16_t color);
+
 void BibleInterface::drawHeader(const char* title, bool show_back) {
     tft.fillRect(0, 0, scrW(), hdrH(), hdr_bg());
     if (show_back) {
@@ -458,8 +462,20 @@ void BibleInterface::drawHeader(const char* title, bool show_back) {
         tft.setTextColor(TFT_WHITE, hdr_bg());
         tft.drawCentreString("<", 22, 10, 1);
     }
-    tft.setTextColor(TFT_WHITE, hdr_bg());
-    tft.drawCentreString(title, scrW()/2, 6, 2);
+    // Title — rendered char-by-char so umlauts/ß (private codes) show correctly
+    // (song titles, dictionary word pairs). Centred, clipped to avoid the back
+    // button (left) and the search/battery area (right).
+    {
+        int16_t left   = show_back ? 46 : 4;
+        int16_t right  = (view == BV_MAIN_MENU) ? (int16_t)scrW() - 4
+                                                : (int16_t)scrW() - 66;
+        int16_t tw     = textWidthUTF8(title, 2);
+        int16_t tx0    = (int16_t)(scrW() / 2) - tw / 2;
+        if (tx0 < left)  tx0 = left;
+        tft.setTextColor(TFT_WHITE, hdr_bg());
+        for (const char* p = title; *p && tx0 < right; p++)
+            tx0 += tftCharUTF8(tft, (uint8_t)*p, tx0, 6, 2, TFT_WHITE);
+    }
 
     // Search button — same bordered-box style as the back button.
     // Hidden on the main menu (there is no content to search there).
@@ -881,12 +897,18 @@ void BibleInterface::drawReadingLines() {
 
 void BibleInterface::drawReading() {
     tft.fillScreen(bg());
-    char hdr[48];
-    // Single-chapter books (Songs) show just the title — no redundant " 1".
-    if (bookChapters(cur_book) <= 1)
+    char hdr[56];
+    if (mode == MODE_DICT) {
+        // Dictionary: show the open page's word pair ("firstword - lastword").
+        const char* pl = pageLabel(cur_chapter - 1);
+        if (pl && pl[0]) snprintf(hdr, sizeof(hdr), "%s", pl);
+        else             snprintf(hdr, sizeof(hdr), "%s p%d", bookDisplay(cur_book), cur_chapter);
+    } else if (bookChapters(cur_book) <= 1) {
+        // Single-chapter books (Songs) show just the title — no redundant " 1".
         snprintf(hdr, sizeof(hdr), "%s", bookDisplay(cur_book));
-    else
+    } else {
         snprintf(hdr, sizeof(hdr), "%s %d", bookDisplay(cur_book), cur_chapter);
+    }
     drawHeader(hdr);
     drawReadingLines();
     drawNavBar("Marks", "Settings", "+Mark");
@@ -912,10 +934,14 @@ void BibleInterface::redrawSettingsContent() {
     const uint8_t  vis   = visItems();
     const int16_t  btn_w = 28, btn_h = 22, btn_r = 4;
 
-    // Clamp scroll so the selected/last rows stay reachable.
-    int16_t max_scroll = (n > vis) ? (int16_t)(n - vis) : 0;
-    if (menu_scroll > max_scroll) menu_scroll = max_scroll;
-    if (menu_scroll < 0)          menu_scroll = 0;
+    // Pixel-accurate scroll (same momentum machinery as the other lists).
+    int16_t sub_px      = (int16_t)fmodf(scroll_px, (float)itemH());
+    int16_t first       = (int16_t)(scroll_px / (float)itemH());
+    int16_t content_top = (int16_t)contentY();
+    int16_t content_end = content_top + (int16_t)contentH();
+
+    tft.startWrite();
+    tft.setViewport(0, contentY(), scrW(), contentH(), false);
 
     // [<] Name [>] choice row. name_col = colour to draw the value text in
     // (0 = default fg). Font/Verse colour rows pass the actual colour so the user
@@ -943,19 +969,19 @@ void BibleInterface::redrawSettingsContent() {
         tft.drawCentreString("<", bwd_bx + btn_w / 2, txt_y, 2);
     };
 
-    for (uint8_t i = 0; i < n; i++) {
-        int16_t row_y = contentY() + ((int16_t)i - menu_scroll) * (int16_t)itemH();
-        if (row_y < (int16_t)contentY() ||
-            row_y + (int16_t)itemH() > (int16_t)(contentY() + contentH())) continue;
+    int16_t last_bottom = content_top;
+    for (int vi = 0; ; vi++) {
+        int16_t i     = first + vi;
+        int16_t row_y = content_top - sub_px + vi * (int16_t)itemH();
+        if (row_y >= content_end || i >= (int16_t)n) break;
         bool sel = (i == (int16_t)menu_sel);
 
-        if (i == 1) { choiceRow(row_y, "Font Color",    FONT_COLOR_NAMES[font_color_idx], sel, font_fg());       continue; }
-        if (i == 2) { choiceRow(row_y, "Verse # Color", FONT_COLOR_NAMES[vnum_color_idx], sel, verse_num_fg()); continue; }
-        if (i == 3) { choiceRow(row_y, "Theme",         THEMES[theme_idx].name,           sel, 0);              continue; }
-        if (i == 6) { choiceRow(row_y, "Highlight",     ACCENT_NAMES[accent_idx],         sel, 0);              continue; }
-        if (i == 7) { choiceRow(row_y, "Orientation",   ORIENT_NAMES[orientation & 3],    sel, 0);              continue; }
-
-        if (i == 4) {
+        if      (i == 1) choiceRow(row_y, "Font Color",    FONT_COLOR_NAMES[font_color_idx], sel, font_fg());
+        else if (i == 2) choiceRow(row_y, "Verse # Color", FONT_COLOR_NAMES[vnum_color_idx], sel, verse_num_fg());
+        else if (i == 3) choiceRow(row_y, "Theme",         THEMES[theme_idx].name,           sel, 0);
+        else if (i == 6) choiceRow(row_y, "Highlight",     ACCENT_NAMES[accent_idx],         sel, 0);
+        else if (i == 7) choiceRow(row_y, "Orientation",   ORIENT_NAMES[orientation & 3],    sel, 0);
+        else if (i == 4) {
             // Brightness row: "Brightness" label + [-] X/20 [+] buttons.
             drawListRow(row_y, "Brightness", sel, false);
             uint16_t bg_c  = sel ? sel_bg() : bg();
@@ -978,29 +1004,35 @@ void BibleInterface::redrawSettingsContent() {
             tft.drawRoundRect(minus_bx, btn_y, btn_w, btn_h, btn_r, dim_fg());
             tft.setTextColor(TFT_WHITE, hdr_bg());
             tft.drawCentreString("-", minus_bx + btn_w / 2, txt_y, 2);
-            continue;
-        }
-
-        char buf[48];
-        if (i == 0) {
-            const char* sz = (font_num == 1) ? "Small" : (font_num == 2) ? "Medium" : "Large";
-            snprintf(buf, sizeof(buf), "Font Size: %s", sz);
-        } else if (i == 5) {
-            const char* tl = (mode == MODE_SONGS) ? "Song Book"
-                           : (mode == MODE_DICT)  ? "Dictionary" : "Translation";
-            snprintf(buf, sizeof(buf), "%s: %s", tl,
-                     trans_count > 0 ? trans_stems[cur_trans] : "-");
-        } else if (i == 8) {
-            strncpy(buf, "Boot OTA_1", sizeof(buf) - 1); buf[sizeof(buf) - 1] = 0;
+        } else {
+            char buf[48];
+            if (i == 0) {
+                const char* sz = (font_num == 1) ? "Small" : (font_num == 2) ? "Medium" : "Large";
+                snprintf(buf, sizeof(buf), "Font Size: %s", sz);
+            } else if (i == 5) {
+                const char* tl = (mode == MODE_SONGS) ? "Song Book"
+                               : (mode == MODE_DICT)  ? "Dictionary" : "Translation";
+                snprintf(buf, sizeof(buf), "%s: %s", tl,
+                         trans_count > 0 ? trans_stems[cur_trans] : "-");
+            } else if (i == 8) {
+                strncpy(buf, "Boot OTA_1", sizeof(buf) - 1); buf[sizeof(buf) - 1] = 0;
 #ifndef HAS_CAP_TOUCH
-        } else {  // i == 9
-            strncpy(buf, "Calibrate Touch", sizeof(buf) - 1); buf[sizeof(buf) - 1] = 0;
+            } else {  // i == 9
+                strncpy(buf, "Calibrate Touch", sizeof(buf) - 1); buf[sizeof(buf) - 1] = 0;
 #endif
+            }
+            drawListRow(row_y, buf, sel, false);
         }
-        drawListRow(row_y, buf, sel, false);
+        int16_t bot = row_y + (int16_t)itemH();
+        if (bot > last_bottom) last_bottom = bot;
     }
 
-    drawScrollBar((int16_t)n, vis, menu_scroll);
+    if (last_bottom < content_end)
+        tft.fillRect(0, last_bottom, scrW(), content_end - last_bottom, bg());
+
+    tft.resetViewport();
+    drawScrollBar((int16_t)n, vis, first);
+    tft.endWrite();
 }
 
 void BibleInterface::drawSettings() {
@@ -1521,6 +1553,8 @@ void BibleInterface::handleSettingsInput() {
         touch_down_x    = tx;
         touch_down_y    = ty;
         scroll_dragging = false;
+        stopFling();
+        drag_origin_px  = scroll_px;
 
         // Header and nav fire immediately on press (no drag ambiguity)
         if (touchInHeader(tx, ty)) {
@@ -1534,40 +1568,50 @@ void BibleInterface::handleSettingsInput() {
             if (tx < scrW()/3) goBack();
             return;
         }
-        // Highlight touched (absolute) item immediately for press feedback.
-        int16_t hi = touchItem(tx, ty);
-        if (hi >= 0 && (menu_scroll + hi) < (int16_t)SETTINGS_N) {
-            menu_sel = menu_scroll + hi;
+        // Highlight touched (absolute) row immediately for press feedback.
+        int16_t row = (int16_t)((scroll_px + (float)((int16_t)ty - (int16_t)contentY())) / (float)itemH());
+        if (row >= 0 && row < (int16_t)SETTINGS_N) {
+            menu_sel = row;
             redrawSettingsContent();
         }
         return;
     }
 
-    // ── Finger held — drag to scroll when the list overflows the screen ───────
+    // ── Finger held — pixel-accurate drag (momentum like the other lists) ─────
     if (down && touch_was_down) {
         int16_t dy = (int16_t)ty - (int16_t)touch_down_y;
         if (!scroll_dragging && abs(dy) > 8) {
             scroll_dragging = true;
-            drag_origin_px  = (float)menu_scroll * (float)itemH();
             menu_sel = -1;
         }
         if (scroll_dragging) {
-            int16_t max_scroll = (SETTINGS_N > visItems()) ?
-                                 (int16_t)(SETTINGS_N - visItems()) : 0;
-            float px = drag_origin_px + (float)((int16_t)touch_down_y - (int16_t)ty);
-            float maxpx = (float)max_scroll * (float)itemH();
-            if (px < 0.f) px = 0.f;
-            if (px > maxpx) px = maxpx;
-            int16_t ns = (int16_t)(px / (float)itemH());
-            if (ns != menu_scroll) { menu_scroll = ns; redrawSettingsContent(); }
+            float max_px = (float)max(0, (int)SETTINGS_N - (int)visItems()) * (float)itemH();
+            float new_px = drag_origin_px + (float)((int16_t)touch_down_y - (int16_t)ty);
+            if (new_px < 0.f) new_px = 0.f;
+            if (new_px > max_px) new_px = max_px;
+            scroll_px   = new_px;
+            menu_scroll = (int16_t)(scroll_px / (float)itemH());
+            recordVel((int16_t)ty, millis());
+            redrawSettingsContent();
         }
         return;
     }
 
-    // ── Finger lifted — activate the item highlighted on press ───────────────
+    // ── Finger lifted — fling, or activate the item highlighted on press ──────
     if (!down && touch_was_down) {
         touch_was_down = false;
-        if (scroll_dragging) { scroll_dragging = false; return; }
+        if (scroll_dragging) {
+            scroll_dragging = false;
+            float v = computeFlingVel();
+            if (fabsf(v) > 50.f) {
+                fling_vel    = v < -4000.f ? -4000.f : v > 4000.f ? 4000.f : v;
+                fling_active = true;
+                fling_ms     = millis();
+            } else {
+                stopFling();
+            }
+            return;
+        }
         if (menu_sel < 0 || menu_sel >= (int16_t)SETTINGS_N) return;
 
         switch (menu_sel) {
@@ -1898,6 +1942,10 @@ void BibleInterface::goToReading(uint16_t chapter, int16_t start_line) {
     stopFling();
     sel_verse_first = sel_verse_last = 0;  // clear verse selection on chapter change
     cur_chapter = chapter;
+    // Dictionary: ensure the page labels for this letter are loaded (so the header
+    // and page bookmarks can show "firstword - lastword"). Needed when arriving via
+    // search/bookmark rather than the page list.
+    if (mode == MODE_DICT && rt_pages_book != cur_book) loadDictPages(cur_book);
     read_line   = start_line;
     scroll_px   = (float)start_line * (float)lineH();
     drawLoading();
@@ -1912,6 +1960,7 @@ void BibleInterface::goToSettings() {
     view = BV_SETTINGS;
     menu_sel = 0;
     menu_scroll = 0;
+    scroll_px = 0.f;
     needs_redraw = true;
 }
 void BibleInterface::goToBookmarks() {
@@ -2009,7 +2058,8 @@ void BibleInterface::freeRuntime() {
     if (rt_secs)      { free(rt_secs);      rt_secs      = nullptr; }
     if (book_offsets) { free(book_offsets); book_offsets = nullptr; }
     if (rt_pages)     { free(rt_pages);     rt_pages     = nullptr; }
-    rt_book_count = 0; rt_sec_count = 0; book_offsets_cap = 0; rt_page_count = 0;
+    rt_book_count = 0; rt_sec_count = 0; book_offsets_cap = 0;
+    rt_page_count = 0; rt_pages_book = 0xFFFF;
 }
 
 // Dictionary: load the "firstword - lastword" labels for `book`'s pages from the
@@ -2022,6 +2072,7 @@ const char* BibleInterface::pageLabel(uint16_t i) const {
 bool BibleInterface::loadDictPages(uint16_t book) {
     if (rt_pages) { free(rt_pages); rt_pages = nullptr; }
     rt_page_count = 0;
+    rt_pages_book = 0xFFFF;
     if (book >= numBooks()) return false;
     uint16_t npages = bookChapters(book);
     if (npages == 0) npages = 1;
@@ -2029,6 +2080,7 @@ bool BibleInterface::loadDictPages(uint16_t book) {
     rt_pages = (char*)RT_MALLOC((size_t)npages * DICT_PAGE_LABEL_LEN);
     if (!rt_pages) return false;
     rt_page_count = npages;
+    rt_pages_book = book;
     for (uint16_t p = 0; p < npages; p++)              // default labels
         snprintf(rt_pages + (size_t)p * DICT_PAGE_LABEL_LEN, DICT_PAGE_LABEL_LEN,
                  "Page %d", p + 1);
@@ -2412,7 +2464,21 @@ void BibleInterface::addBookmarkCurrent() {
     if (sel_verse_first > 0) {
         // Verse / range bookmark. Songs are single-chapter, so drop the chapter
         // number (e.g. "Title  v3" instead of "Title 1:3").
-        if (mode == MODE_SONGS) {
+        if (mode == MODE_DICT) {
+            // Label with the entry's headword (text before " - ").
+            char w[40]; w[0] = 0;
+            if (cached_book == cur_book && cached_chap == cur_chapter &&
+                sel_verse_first >= 1 && sel_verse_first <= cached_count) {
+                const char* s    = verse_buf[sel_verse_first - 1];
+                const char* dash = strstr(s, " - ");
+                size_t len = dash ? (size_t)(dash - s) : strlen(s);
+                if (len > sizeof(w) - 1) len = sizeof(w) - 1;
+                memcpy(w, s, len); w[len] = 0;
+            }
+            if (w[0]) snprintf(bm.label, BIBLE_BM_LABEL_LEN, "%s", w);
+            else      snprintf(bm.label, BIBLE_BM_LABEL_LEN, "%s p%d:%d",
+                               bookDisplay(cur_book), cur_chapter, sel_verse_first);
+        } else if (mode == MODE_SONGS) {
             if (sel_verse_first == sel_verse_last)
                 snprintf(bm.label, BIBLE_BM_LABEL_LEN, "%s  v%d",
                          bookDisplay(cur_book), sel_verse_first);
@@ -2441,12 +2507,18 @@ void BibleInterface::addBookmarkCurrent() {
             }
         }
     } else {
-        // Whole-chapter bookmark (songs: just the title — they are single-chapter)
-        if (mode == MODE_SONGS)
+        // Whole-chapter bookmark (songs: just the title; dict: the page word pair).
+        if (mode == MODE_SONGS) {
             snprintf(bm.label, BIBLE_BM_LABEL_LEN, "%s", bookDisplay(cur_book));
-        else
+        } else if (mode == MODE_DICT) {
+            const char* pl = pageLabel(cur_chapter - 1);
+            if (pl && pl[0]) snprintf(bm.label, BIBLE_BM_LABEL_LEN, "%s", pl);
+            else             snprintf(bm.label, BIBLE_BM_LABEL_LEN, "%s p%d",
+                                      bookDisplay(cur_book), cur_chapter);
+        } else {
             snprintf(bm.label, BIBLE_BM_LABEL_LEN, "%s %d",
                      bookDisplay(cur_book), cur_chapter);
+        }
         for (uint8_t i = 0; i < bm_count; i++) {
             if (bookmarks[i].book == cur_book && bookmarks[i].chapter == cur_chapter
                     && bookmarks[i].verse_first == 0
@@ -2573,6 +2645,9 @@ void BibleInterface::updateFling(uint32_t now) {
         case BV_SEARCH_RESULTS:
             max_px = (float)max(0, (int)search_result_count - (int)visSearchItems()) * (float)srchH();
             break;
+        case BV_SETTINGS:
+            max_px = (float)max(0, (int)settingsRowCount() - (int)visItems()) * (float)itemH();
+            break;
         default:
             fling_active = false;
             return;
@@ -2618,6 +2693,10 @@ void BibleInterface::updateFling(uint32_t now) {
         case BV_SEARCH_RESULTS:
             menu_scroll = (int16_t)(scroll_px / (float)srchH());
             redrawSearchResultsContent();
+            break;
+        case BV_SETTINGS:
+            menu_scroll = (int16_t)(scroll_px / (float)itemH());
+            redrawSettingsContent();
             break;
         default: break;
     }

@@ -184,6 +184,7 @@ private:
     // Dictionary page index (labels "firstword - lastword") for the active letter.
     char*    rt_pages;        // flat array of rt_page_count × DICT_PAGE_LABEL_LEN
     uint16_t rt_page_count;
+    uint16_t rt_pages_book;   // which book index rt_pages was loaded for (0xFFFF = none)
 
     // ── View state ────────────────────────────────────────────────────────
     BibleView view;
