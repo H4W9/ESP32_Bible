@@ -51,7 +51,13 @@ bool bibleKeyboardInput(TFT_eSPI& tft,
                         bool*       partial_match  = nullptr,
                         bool*       ignore_punct   = nullptr,
                         uint8_t*    scope          = nullptr,
-                        // Dictionary mode: replaces the "Scope" row with a "Dict:"
+                        // Customize the choice row label/options (default is
+                        // "Scope:" Bible/Section/Book). e.g. Songs passes "Find:"
+                        // {Body,Title}. *scope cycles 0..scope_count-1.
+                        const char*        scope_label = nullptr,
+                        const char* const* scope_opts  = nullptr,
+                        uint8_t            scope_count = 0,
+                        // Dictionary mode: replaces the choice row with a "Dict:"
                         // selector. Tapping the row cycles *dict_sel through
                         // dict_names[0..dict_count-1]. (scope should be nullptr then.)
                         const char* const* dict_names = nullptr,

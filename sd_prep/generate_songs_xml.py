@@ -43,7 +43,46 @@ import argparse
 import os
 import re
 import sys
+import unicodedata
 import zipfile
+
+# Characters the firmware CAN render: ASCII + these German umlauts/ß (compressed to
+# private byte codes on load). Everything else must be transliterated or dropped —
+# otherwise stray UTF-8 continuation bytes render as random "Ä"-like glyphs.
+KEEP_UMLAUT = set("äöüÄÖÜß")
+ACCENT_BASE = {
+    'á':'a','à':'a','â':'a','ã':'a','å':'a','ā':'a',
+    'ç':'c','ć':'c','é':'e','è':'e','ê':'e','ë':'e','ē':'e',
+    'í':'i','ì':'i','î':'i','ï':'i','ī':'i','ñ':'n',
+    'ó':'o','ò':'o','ô':'o','õ':'o','ō':'o','ø':'o',
+    'ú':'u','ù':'u','û':'u','ū':'u','ý':'y','ÿ':'y',
+}
+# Common typography → ASCII so songs read cleanly.
+TYPO = {
+    '‘':"'", '’':"'", '‚':"'", '‛':"'", '´':"'", '`':"'",
+    '“':'"', '”':'"', '„':'"', '‟':'"',
+    '–':'-', '—':'-', '−':'-', '‐':'-', '‑':'-',
+    '…':'...', ' ':' ', ' ':' ', '​':'',
+}
+
+
+def sanitize_text(s: str) -> str:
+    """Reduce text to firmware-renderable characters (ASCII + German umlauts)."""
+    out = []
+    for ch in s:
+        if ch in KEEP_UMLAUT:
+            out.append(ch)
+        elif ch in TYPO:
+            out.append(TYPO[ch])
+        elif ord(ch) < 128:
+            out.append(ch)
+        elif ch in ACCENT_BASE:
+            out.append(ACCENT_BASE[ch])
+        else:
+            dec = unicodedata.normalize("NFKD", ch)
+            out.append("".join(c for c in dec
+                               if not unicodedata.combining(c) and ord(c) < 128))
+    return "".join(out)
 
 try:
     import openpyxl
@@ -209,12 +248,11 @@ def generate(data_path, books_path, cats_path, out_dir, make_zip):
         book_title = books[bid]
         stem = safe_stem(book_title)
 
-        # Order categories by first appearance, songs keep sheet order within a
-        # category so each section's books are contiguous (engine requirement).
-        cat_order = []
-        for cid, _, _ in songlist:
-            if cid not in cat_order:
-                cat_order.append(cid)
+        # Categories sorted alphabetically by display name; songs sorted
+        # alphabetically by title within each category. Books stay grouped by
+        # section and contiguous (engine requirement) because we emit per category.
+        cat_ids = sorted(set(cid for cid, _, _ in songlist),
+                         key=lambda c: sanitize_text(str(cats[(bid, c)])).strip().lower())
 
         xml_path = os.path.join(out_dir, stem + ".xml")
         toc_lines = []          # built in parallel, written after we know offsets
@@ -227,24 +265,27 @@ def generate(data_path, books_path, cats_path, out_dir, make_zip):
             w('<?xml version="1.0" encoding="UTF-8"?>\n<osis>\n')
 
             song_no = 0
-            for sec_idx, cid in enumerate(cat_order):
-                cat_name = toc_safe(clip(cats[(bid, cid)], SECNAME_MAX))
+            for sec_idx, cid in enumerate(cat_ids):
+                cat_name = toc_safe(clip(sanitize_text(cats[(bid, cid)]), SECNAME_MAX))
                 toc_lines.append(f"S|{cat_name}")
 
-                for c2, title, stanzas in songlist:
-                    if c2 != cid:
-                        continue
+                songs_in_cat = [(title, stanzas) for c2, title, stanzas in songlist
+                                if c2 == cid]
+                songs_in_cat.sort(key=lambda t: sanitize_text(
+                    normalize_title(t[0]) if t[0] else "").strip().lower())
+
+                for title, stanzas in songs_in_cat:
                     song_no += 1
                     code = f"S{song_no}"
                     disp = normalize_title(title) if title else f"Song {song_no}"
-                    disp = toc_safe(clip(disp, DISPLAY_MAX))
+                    disp = toc_safe(clip(sanitize_text(disp), DISPLAY_MAX))
 
                     offset = xf.tell()      # byte offset of this song's first verse
                     book_entries.append((code, disp, sec_idx, offset))
 
                     for si, stanza in enumerate(stanzas, start=1):
                         text = strip_leading_number(stanza)
-                        text = clip(text, VERSE_MAX)
+                        text = clip(sanitize_text(text), VERSE_MAX)
                         w(f'<verse osisID="{code}.1.{si}">{xml_escape(text)}</verse>\n')
                         grand_verses += 1
 
@@ -260,7 +301,7 @@ def generate(data_path, books_path, cats_path, out_dir, make_zip):
 
         written_files += [xml_path, toc_path]
         print(f"  {stem:<24} {len(book_entries):>4} songs  "
-              f"{len(cat_order):>3} categories")
+              f"{len(cat_ids):>3} categories")
 
     if make_zip:
         zip_path = out_dir.rstrip("/\\") + "_sd.zip"

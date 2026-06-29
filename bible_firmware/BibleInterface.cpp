@@ -94,6 +94,27 @@ static const char* const ACCENT_NAMES[] = {
 static const uint8_t ACCENT_COUNT = 24;
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Reading-text colour palette (Font Color setting). Index 0 = "Default" (follows
+// the theme). The rest are white + shades of gray + black (RGB565).
+// ─────────────────────────────────────────────────────────────────────────────
+static const char* const FONT_COLOR_NAMES[] = {
+    "Default", "White", "Silver", "Light Gray", "Gray",
+    "Dim Gray", "Dark Gray", "Charcoal", "Black"
+};
+static const uint16_t FONT_COLOR_VAL[] = {
+    0x0000,   // [0] Default — unused (font_fg returns theme fg())
+    0xFFFF,   // White        (255,255,255)
+    0xC618,   // Silver       (192,192,192)
+    0xAD55,   // Light Gray   (168,168,168)
+    0x8410,   // Gray         (128,128,128)
+    0x6B4D,   // Dim Gray     (104,104,104)
+    0x4208,   // Dark Gray    ( 64, 64, 64)
+    0x2104,   // Charcoal     ( 32, 32, 32)
+    0x0000,   // Black        (  0,  0,  0)
+};
+static const uint8_t FONT_COLOR_COUNT = 9;
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Section metadata
 // ─────────────────────────────────────────────────────────────────────────────
 const uint8_t BibleInterface::SEC_BOOK_START[4]  = { 0, 22, 39, 49 };
@@ -212,7 +233,7 @@ BibleInterface::BibleInterface()
     : cur_sec(0), cur_book(0), cur_chapter(1), cur_trans(0),
       mode(MODE_BIBLE), rt_books(nullptr), rt_book_count(0),
       rt_secs(nullptr), rt_sec_count(0),
-      view(BV_MAIN_MENU), dark_mode(true), font_num(2), needs_redraw(true),
+      view(BV_MAIN_MENU), dark_mode(true), font_num(2), font_color_idx(0), needs_redraw(true),
       menu_sel(0), menu_scroll(0), read_line(0),
       cached_book(0xFFFF), cached_chap(0), cached_count(0),
       line_count(0), trans_count(0), bm_count(0), bm_sel(0), bm_scroll(0),
@@ -338,6 +359,10 @@ uint16_t BibleInterface::hdr_bg()     const { return dark_mode ? 0x1082       : 
 uint16_t BibleInterface::sel_bg()     const { return dark_mode ? ACCENT_DARK[accent_idx] : ACCENT_LIGHT[accent_idx]; }
 uint16_t BibleInterface::dim_fg()     const { return dark_mode ? 0x7BEF       : 0x632C;   }
 uint16_t BibleInterface::verse_num_fg()const{ return 0x051D; /* muted teal */ }
+uint16_t BibleInterface::font_fg() const {
+    if (font_color_idx == 0 || font_color_idx >= FONT_COLOR_COUNT) return fg();
+    return FONT_COLOR_VAL[font_color_idx];
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Layout helpers
@@ -767,12 +792,12 @@ void BibleInterface::drawReadingLines() {
                     num_str[n_len + 1] = 0;
                     line_spr.setTextColor(verse_num_fg(), line_bg);
                     int16_t nx = line_spr.drawString(num_str, 4, 2, font_num);
-                    line_spr.setTextColor(fg(), line_bg);
-                    drawStringUTF8(line_spr, pipe + 1, 4 + nx + 2, 2, font_num, fg());
+                    line_spr.setTextColor(font_fg(), line_bg);
+                    drawStringUTF8(line_spr, pipe + 1, 4 + nx + 2, 2, font_num, font_fg());
                 }
             } else {
-                line_spr.setTextColor(fg(), line_bg);
-                drawStringUTF8(line_spr, ln, 4, 2, font_num, fg());
+                line_spr.setTextColor(font_fg(), line_bg);
+                drawStringUTF8(line_spr, ln, 4, 2, font_num, font_fg());
             }
         }
 
@@ -802,9 +827,9 @@ void BibleInterface::drawReading() {
 // ─────────────────────────────────────────────────────────────────────────────
 void BibleInterface::redrawSettingsContent() {
 #ifdef HAS_CAP_TOUCH
-    const uint8_t  n = 6;
-#else
     const uint8_t  n = 7;
+#else
+    const uint8_t  n = 8;
 #endif
     const int16_t  btn_w = 28, btn_h = 22, btn_r = 4;
 
@@ -812,7 +837,38 @@ void BibleInterface::redrawSettingsContent() {
         int16_t row_y = contentY() + (int16_t)i * itemH();
         bool    sel   = (i == (int16_t)menu_sel);
 
-        if (i == 2) {
+        if (i == 1 || i == 5) {
+            // Font Color (1) or Highlight (5): label + [<] Name [>] controls.
+            const char* lbl   = (i == 1) ? "Font Color" : "Highlight";
+            const char* cname = (i == 1) ? FONT_COLOR_NAMES[font_color_idx]
+                                         : ACCENT_NAMES[accent_idx];
+            drawListRow(row_y, lbl, sel, false);
+
+            uint16_t bg_c  = sel ? sel_bg() : bg();
+            int16_t  btn_y = row_y + (itemH() - btn_h) / 2;
+            int16_t  txt_y = btn_y + (btn_h - 16) / 2;
+            int16_t  nam_y = row_y + (itemH() - 16) / 2;
+
+            int16_t fwd_bx = (int16_t)scrW() - 4 - btn_w;
+            tft.fillRoundRect(fwd_bx, btn_y, btn_w, btn_h, btn_r, hdr_bg());
+            tft.drawRoundRect(fwd_bx, btn_y, btn_w, btn_h, btn_r, dim_fg());
+            tft.setTextColor(TFT_WHITE, hdr_bg());
+            tft.drawCentreString(">", fwd_bx + btn_w / 2, txt_y, 2);
+
+            int16_t nam_w = (int16_t)tft.textWidth(cname, 2);
+            int16_t nam_x = fwd_bx - 4 - nam_w;
+            tft.setTextColor(fg(), bg_c);
+            tft.drawString(cname, nam_x, nam_y, 2);
+
+            int16_t bwd_bx = nam_x - 4 - btn_w;
+            tft.fillRoundRect(bwd_bx, btn_y, btn_w, btn_h, btn_r, hdr_bg());
+            tft.drawRoundRect(bwd_bx, btn_y, btn_w, btn_h, btn_r, dim_fg());
+            tft.setTextColor(TFT_WHITE, hdr_bg());
+            tft.drawCentreString("<", bwd_bx + btn_w / 2, txt_y, 2);
+            continue;
+        }
+
+        if (i == 3) {
             // Brightness row: "Brightness" label + [-] X/20 [+] buttons.
             // Buttons are styled like the search button: 28×22, radius 4,
             // hdr_bg() fill, dim_fg() border, white centred text.
@@ -849,48 +905,17 @@ void BibleInterface::redrawSettingsContent() {
             char buf[40];
             if (i == 0) {
                 const char* sz = (font_num == 1) ? "Small" : (font_num == 2) ? "Medium" : "Large";
-                snprintf(buf, sizeof(buf), "Font: %s", sz);
-            } else if (i == 1) {
+                snprintf(buf, sizeof(buf), "Font Size: %s", sz);
+            } else if (i == 2) {
                 snprintf(buf, sizeof(buf), "Theme: %s", dark_mode ? "Dark" : "Light");
-            } else if (i == 3) {
+            } else if (i == 4) {
                 snprintf(buf, sizeof(buf), "Translation: %s",
                          trans_count > 0 ? trans_stems[cur_trans] : "-");
-            } else if (i == 4) {
-                // Highlight row drawn separately below — fall through to drawListRow
-                // for the label, then overlay [<] Name [>] controls.
-                drawListRow(row_y, "Highlight", sel, false);
-
-                uint16_t bg_c  = sel ? sel_bg() : bg();
-                int16_t  btn_y = row_y + (itemH() - btn_h) / 2;
-                int16_t  txt_y = btn_y + (btn_h - 16) / 2;
-                int16_t  nam_y = row_y + (itemH() - 16) / 2;
-
-                // [>] button — right-aligned with 4 px margin (same position as [+])
-                int16_t fwd_bx = (int16_t)scrW() - 4 - btn_w;
-                tft.fillRoundRect(fwd_bx, btn_y, btn_w, btn_h, btn_r, hdr_bg());
-                tft.drawRoundRect(fwd_bx, btn_y, btn_w, btn_h, btn_r, dim_fg());
-                tft.setTextColor(TFT_WHITE, hdr_bg());
-                tft.drawCentreString(">", fwd_bx + btn_w / 2, txt_y, 2);
-
-                // Color name — right-aligned 4 px left of [>]
-                const char* cname  = ACCENT_NAMES[accent_idx];
-                int16_t     nam_w  = (int16_t)tft.textWidth(cname, 2);
-                int16_t     nam_x  = fwd_bx - 4 - nam_w;
-                tft.setTextColor(fg(), bg_c);
-                tft.drawString(cname, nam_x, nam_y, 2);
-
-                // [<] button — 4 px left of the name
-                int16_t bwd_bx = nam_x - 4 - btn_w;
-                tft.fillRoundRect(bwd_bx, btn_y, btn_w, btn_h, btn_r, hdr_bg());
-                tft.drawRoundRect(bwd_bx, btn_y, btn_w, btn_h, btn_r, dim_fg());
-                tft.setTextColor(TFT_WHITE, hdr_bg());
-                tft.drawCentreString("<", bwd_bx + btn_w / 2, txt_y, 2);
-                continue;  // skip the drawListRow call at the bottom of the else block
-            } else if (i == 5) {
+            } else if (i == 6) {
                 strncpy(buf, "Boot OTA_1", sizeof(buf) - 1);
                 buf[sizeof(buf) - 1] = 0;
 #ifndef HAS_CAP_TOUCH
-            } else {  // i == 6
+            } else {  // i == 7
                 strncpy(buf, "Calibrate Touch", sizeof(buf) - 1);
                 buf[sizeof(buf) - 1] = 0;
 #endif
@@ -1406,9 +1431,9 @@ void BibleInterface::handleReadingInput() {
 
 void BibleInterface::handleSettingsInput() {
 #ifdef HAS_CAP_TOUCH
-    const uint8_t SETTINGS_N = 6;
-#else
     const uint8_t SETTINGS_N = 7;
+#else
+    const uint8_t SETTINGS_N = 8;
 #endif
     uint16_t tx, ty;
     bool down = pollTouch(&tx, &ty);
@@ -1454,7 +1479,16 @@ void BibleInterface::handleSettingsInput() {
                 prefs.putUChar("font", font_num);
                 redrawSettingsContent();
                 break;
-            case 1: // Theme — bg/header/nav all change, repaint each zone without fillScreen
+            case 1: // Font color — [>] forward, [<] backward (boundary at scrW()-32)
+                if ((int16_t)touch_down_x >= (int16_t)scrW() - 32)
+                    font_color_idx = (uint8_t)((font_color_idx + 1) % FONT_COLOR_COUNT);
+                else
+                    font_color_idx = (font_color_idx == 0) ? FONT_COLOR_COUNT - 1
+                                                           : font_color_idx - 1;
+                prefs.putUChar("fontcol", font_color_idx);
+                redrawSettingsContent();
+                break;
+            case 2: // Theme — bg/header/nav all change, repaint each zone without fillScreen
                 dark_mode = !dark_mode;
                 prefs.putBool("dark", dark_mode);
                 drawHeader("Settings");
@@ -1467,7 +1501,7 @@ void BibleInterface::handleSettingsInput() {
                 }
                 drawNavBar("Back", "", "");
                 break;
-            case 2: // Brightness — [+] button starts at scrW()-32; everything left = [-]
+            case 3: // Brightness — [+] button starts at scrW()-32; everything left = [-]
                 if ((int16_t)touch_down_x >= (int16_t)scrW() - 32) {
                     if (bl_idx < 19) blSet(bl_idx + 1);
                 } else {
@@ -1475,7 +1509,7 @@ void BibleInterface::handleSettingsInput() {
                 }
                 redrawSettingsContent();
                 break;
-            case 3: // Translation cycle
+            case 4: // Translation cycle
                 if (trans_count > 1) {
                     cur_trans = (cur_trans + 1) % trans_count;
                     prefs.putUChar("trans", cur_trans);
@@ -1495,7 +1529,7 @@ void BibleInterface::handleSettingsInput() {
                 }
                 redrawSettingsContent();
                 break;
-            case 4: // Highlight — [>] forward, [<] backward (boundary at scrW()-32)
+            case 5: // Highlight — [>] forward, [<] backward (boundary at scrW()-32)
                 if ((int16_t)touch_down_x >= (int16_t)scrW() - 32)
                     accent_idx = (uint8_t)((accent_idx + 1) % ACCENT_COUNT);
                 else
@@ -1503,11 +1537,11 @@ void BibleInterface::handleSettingsInput() {
                 prefs.putUChar("accent", accent_idx);
                 redrawSettingsContent();
                 break;
-            case 5: // Boot Marauder
+            case 6: // Boot Marauder
                 bootMarauder();
                 return;
 #ifndef HAS_CAP_TOUCH
-            case 6: // Calibrate Touch
+            case 7: // Calibrate Touch
                 runTouchCalibration();
                 drawSettings();
                 return;
@@ -1872,6 +1906,7 @@ bool BibleInterface::loadToc(const char* stem) {
             if (ln[0] == 'S' && si < nsec) {
                 strncpy(rt_secs[si].name, ln + 2, RT_SEC_NAME_LEN - 1);
                 rt_secs[si].name[RT_SEC_NAME_LEN - 1] = 0;
+                utf8Encode(rt_secs[si].name);   // UTF-8 umlauts → private codes for rendering
                 rt_secs[si].start = 0; rt_secs[si].len = 0;
                 si++;
             } else if (ln[0] == 'B' && bi < nbook) {
@@ -1886,6 +1921,7 @@ bool BibleInterface::loadToc(const char* stem) {
                     rt_books[bi].code[RT_CODE_LEN - 1] = 0;
                     strncpy(rt_books[bi].display, f1 + 1, RT_DISP_LEN - 1);
                     rt_books[bi].display[RT_DISP_LEN - 1] = 0;
+                    utf8Encode(rt_books[bi].display);  // UTF-8 umlauts → private codes
                     uint16_t chaps = (uint16_t)atoi(f2 + 1);
                     rt_books[bi].chapters = chaps ? chaps : 1;
                     rt_books[bi].section  = (uint16_t)atoi(f3 + 1);
@@ -2700,6 +2736,11 @@ void BibleInterface::buildWrappedLines() {
 
     for (uint8_t v = 0; v < cached_count && line_count < BIBLE_MAX_LINES; v++) {
         addWrappedLine(v + 1, verse_buf[v], max_px, font_num, line_count);
+        // Songs: blank line between stanzas for readability (not after the last).
+        if (mode == MODE_SONGS && v + 1 < cached_count && line_count < BIBLE_MAX_LINES) {
+            lines[line_count][0] = 0;
+            line_count++;
+        }
     }
 }
 
@@ -2807,6 +2848,7 @@ void BibleInterface::saveState() {
     prefs.putUShort("chap",     cur_chapter);
     prefs.putUChar("trans",     cur_trans);
     prefs.putUChar("font",      font_num);
+    prefs.putUChar("fontcol",   font_color_idx);
     prefs.putBool ("dark",      dark_mode);
     prefs.putUChar("accent",    accent_idx);
     prefs.putBool ("srch_part", srch_partial_match);
@@ -2819,6 +2861,8 @@ void BibleInterface::loadState() {
     cur_chapter       = prefs.getUShort("chap",     1);
     cur_trans         = prefs.getUChar("trans",     0);
     font_num          = prefs.getUChar("font",      2);
+    font_color_idx    = prefs.getUChar("fontcol",   0);
+    if (font_color_idx >= FONT_COLOR_COUNT) font_color_idx = 0;
     dark_mode         = prefs.getBool ("dark",      true);
     accent_idx        = prefs.getUChar("accent",    0);
     srch_partial_match = prefs.getBool ("srch_part", true);
@@ -2960,6 +3004,16 @@ void BibleInterface::scanTranslations() {
         strncpy(trans_stems[i], s.c_str(), BIBLE_TRANS_LEN - 1);
         trans_stems[i][BIBLE_TRANS_LEN - 1] = 0;
     }
+    // Sort the list alphabetically so the picker (songbooks/dictionaries/Bibles)
+    // is in a predictable order.
+    for (uint8_t i = 0; i + 1 < trans_count; i++)
+        for (uint8_t j = i + 1; j < trans_count; j++)
+            if (strcmp(trans_stems[j], trans_stems[i]) < 0) {
+                char tmp[BIBLE_TRANS_LEN];
+                strncpy(tmp, trans_stems[i], BIBLE_TRANS_LEN);
+                strncpy(trans_stems[i], trans_stems[j], BIBLE_TRANS_LEN);
+                strncpy(trans_stems[j], tmp, BIBLE_TRANS_LEN);
+            }
     if (cur_trans >= trans_count) cur_trans = 0;
 }
 
@@ -3598,71 +3652,31 @@ void BibleInterface::handleSearchInputInput() {
             touch_was_down = false;
             uint16_t third = scrW() / 3;
             if (tx < third) {
-                // New — open keyboard, run search if confirmed
+                // New — open a fresh keyboard, run search if confirmed
                 search_query[0] = 0;
-#ifdef HAS_TOUCH
-                const char* kb_title = (mode == MODE_SONGS) ? "Search Songs:"
-                                     : (mode == MODE_DICT)  ? "Search word:"
-                                                            : "Search Bible:";
-                bool ok;
-                if (mode == MODE_DICT) {
-                    // Dictionary auto-scopes to the query's letter bucket, so the
-                    // scope row becomes a "Dict:" selector (tap to switch dictionary).
-                    char up[BIBLE_MAX_TRANS][BIBLE_TRANS_LEN];
-                    const char* names[BIBLE_MAX_TRANS];
-                    for (uint8_t i = 0; i < trans_count; i++) {
-                        strncpy(up[i], trans_stems[i], BIBLE_TRANS_LEN - 1);
-                        up[i][BIBLE_TRANS_LEN - 1] = 0;
-                        for (char* p = up[i]; *p; ++p) *p = (char)toupper((unsigned char)*p);
-                        names[i] = up[i];
-                    }
-                    uint8_t dsel = cur_trans;
-                    ok = bibleKeyboardInput(tft, fg(), bg(),
-                                            search_query, BIBLE_SEARCH_QUERY_LEN,
-                                            kb_title, &srch_partial_match,
-                                            &srch_ignore_punct, nullptr,
-                                            names, trans_count, &dsel);
-                    if (dsel != cur_trans && dsel < trans_count) {
-                        cur_trans = dsel;
-                        prefs.putUChar("trans", cur_trans);
-                        loadToc(trans_stems[cur_trans]);
-                        cached_book = 0xFFFF; cached_chap = 0; cached_count = 0;
-                        if (cur_book >= numBooks()) cur_book = 0;
-                        cur_sec = (numBooks() > 0) ? bookSection(cur_book) : 0;
-                    }
-                } else {
-                    ok = bibleKeyboardInput(tft, fg(), bg(),
-                                            search_query, BIBLE_SEARCH_QUERY_LEN,
-                                            kb_title, &srch_partial_match,
-                                            &srch_ignore_punct, &srch_scope);
-                }
-                // Persist any option changes the user made inside the keyboard
-                prefs.putBool ("srch_part", srch_partial_match);
-                prefs.putBool ("srch_pnct", srch_ignore_punct);
-                prefs.putUChar("srch_scp",  srch_scope);
-                if (ok && search_query[0]) {
+                if (openSearchKeyboard() && search_query[0]) {
                     addToSearchHistory(search_query);
-                    if (searchBible(search_query))
-                        goToSearchResults();
-                    else
-                        needs_redraw = true;
+                    if (searchBible(search_query)) goToSearchResults();
+                    else                           needs_redraw = true;
                 } else {
                     needs_redraw = true;
                 }
-#endif
                 return;
             } else if (tx < 2 * third) {
-                // View — run search for the selected history item
+                // View — open the keyboard pre-filled with the selected history
+                // item so the user can edit the query/options before searching.
                 if (search_hist_sel >= 0 &&
                     search_hist_sel < (int16_t)search_hist_count) {
                     strncpy(search_query, search_hist[search_hist_sel],
                             BIBLE_SEARCH_QUERY_LEN - 1);
                     search_query[BIBLE_SEARCH_QUERY_LEN - 1] = 0;
-                    addToSearchHistory(search_query);
-                    if (searchBible(search_query))
-                        goToSearchResults();
-                    else
+                    if (openSearchKeyboard() && search_query[0]) {
+                        addToSearchHistory(search_query);
+                        if (searchBible(search_query)) goToSearchResults();
+                        else                           needs_redraw = true;
+                    } else {
                         needs_redraw = true;
+                    }
                 }
                 return;
             } else {
@@ -3941,10 +3955,77 @@ bool BibleInterface::searchContains(const char* text, const char* query) {
     return false;
 }
 
+bool BibleInterface::openSearchKeyboard() {
+#ifdef HAS_TOUCH
+    const char* kb_title = (mode == MODE_SONGS) ? "Search Songs:"
+                         : (mode == MODE_DICT)  ? "Search word:"
+                                                : "Search Bible:";
+    bool ok;
+    if (mode == MODE_DICT) {
+        // Dictionary auto-scopes to the query's letter bucket, so the choice row
+        // becomes a "Dict:" selector (tap to switch which dictionary is searched).
+        char up[BIBLE_MAX_TRANS][BIBLE_TRANS_LEN];
+        const char* names[BIBLE_MAX_TRANS];
+        for (uint8_t i = 0; i < trans_count; i++) {
+            strncpy(up[i], trans_stems[i], BIBLE_TRANS_LEN - 1);
+            up[i][BIBLE_TRANS_LEN - 1] = 0;
+            for (char* p = up[i]; *p; ++p) *p = (char)toupper((unsigned char)*p);
+            names[i] = up[i];
+        }
+        uint8_t dsel = cur_trans;
+        ok = bibleKeyboardInput(tft, fg(), bg(), search_query, BIBLE_SEARCH_QUERY_LEN,
+                                kb_title, &srch_partial_match, &srch_ignore_punct,
+                                nullptr, nullptr, nullptr, 0,
+                                names, trans_count, &dsel);
+        if (dsel != cur_trans && dsel < trans_count) {
+            cur_trans = dsel;
+            prefs.putUChar("trans", cur_trans);
+            loadToc(trans_stems[cur_trans]);
+            cached_book = 0xFFFF; cached_chap = 0; cached_count = 0;
+            if (cur_book >= numBooks()) cur_book = 0;
+            cur_sec = (numBooks() > 0) ? bookSection(cur_book) : 0;
+        }
+    } else if (mode == MODE_SONGS) {
+        // Songs: choice row toggles where to search — Body (stanzas) or Title.
+        static const char* const FIND[2] = { "Body", "Title" };
+        if (srch_scope > 1) srch_scope = 0;
+        ok = bibleKeyboardInput(tft, fg(), bg(), search_query, BIBLE_SEARCH_QUERY_LEN,
+                                kb_title, &srch_partial_match, &srch_ignore_punct,
+                                &srch_scope, "Find:", FIND, 2);
+    } else {
+        ok = bibleKeyboardInput(tft, fg(), bg(), search_query, BIBLE_SEARCH_QUERY_LEN,
+                                kb_title, &srch_partial_match, &srch_ignore_punct,
+                                &srch_scope);
+    }
+    // Persist option changes the user made inside the keyboard.
+    prefs.putBool ("srch_part", srch_partial_match);
+    prefs.putBool ("srch_pnct", srch_ignore_punct);
+    prefs.putUChar("srch_scp",  srch_scope);
+    return ok;
+#else
+    return false;
+#endif
+}
+
 bool BibleInterface::searchBible(const char* query) {
     search_result_count = 0;
     search_res_sel      = 0;
     if (trans_count == 0 || !query || !query[0]) return false;
+
+    // Songs "Title" search: match song titles directly (instant, no XML scan).
+    if (mode == MODE_SONGS && srch_scope == 1) {
+        for (uint16_t b = 0; b < numBooks() &&
+                             search_result_count < BIBLE_MAX_SEARCH_RESULTS; b++) {
+            if (searchContains(bookDisplay(b), query)) {
+                BibleSearchResult r;
+                r.book = b; r.chapter = 1; r.verse = 1;
+                strncpy(r.snippet, bookDisplay(b), BIBLE_SRCH_SNIPPET_LEN - 1);
+                r.snippet[BIBLE_SRCH_SNIPPET_LEN - 1] = 0;
+                search_results[search_result_count++] = r;
+            }
+        }
+        return true;
+    }
 
     // Show search progress screen
     tft.fillScreen(bg());
@@ -4068,10 +4149,11 @@ bool BibleInterface::searchBible(const char* query) {
                                 // Dictionary: we seeked to one letter-bucket book.
                                 // Once a verse from a later book appears, we're done.
                                 if (mode == MODE_DICT && bk != dict_bucket) break;
-                                // Scope filter (Bible/Songs): skip verses outside scope.
-                                // (Dictionary's "scope" is the letter bucket above.)
+                                // Scope filter applies to Bible only (Section/Book).
+                                // Dict scopes by letter bucket; Songs Body scans all
+                                // stanzas (Title search is handled separately above).
                                 bool in_scope = true;
-                                if (mode != MODE_DICT) {
+                                if (mode == MODE_BIBLE) {
                                     if (srch_scope == 1)
                                         in_scope = (bookSection(bk) == cur_sec);
                                     else if (srch_scope == 2)

@@ -184,6 +184,7 @@ private:
     BibleView view;
     bool      dark_mode;
     uint8_t   font_num;     // 1=small(8px), 2=medium(16px), 4=large(26px)
+    uint8_t   font_color_idx; // 0 = Default (theme fg); else index into FONT_COLOR_VAL[]
     bool      needs_redraw;
 
     // ── List scroll/select ────────────────────────────────────────────────
@@ -313,6 +314,7 @@ private:
     uint16_t sel_bg()  const;
     uint16_t dim_fg()  const;
     uint16_t verse_num_fg() const;
+    uint16_t font_fg()      const;  // reading-text colour (Font Color setting)
 
     // ── Structure accessors (Bible static table  OR  runtime Songs/Dict) ───
     uint16_t numBooks() const { return (mode == MODE_BIBLE) ? BIBLE_BOOK_COUNT : rt_book_count; }
@@ -395,6 +397,10 @@ private:
     void jumpToBookmark(uint8_t bm_idx);
     void goToSearchInput();
     void goToSearchResults();
+    // Opens the on-screen keyboard for a search. search_query is in/out: pass it
+    // empty for a fresh search, or pre-filled (e.g. from history) to edit first.
+    // Handles the mode-specific option row (Bible scope / Songs Find / Dict picker).
+    bool openSearchKeyboard();
     bool searchBible(const char* query);
     void jumpToSearchResult(uint16_t idx);
     bool searchContains(const char* text, const char* query);

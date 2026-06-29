@@ -102,7 +102,10 @@ static void drawSzligLabel(TFT_eSPI& tft,
 static void drawOptions(TFT_eSPI& tft, uint16_t fg, uint16_t bg,
                         uint16_t scrW, uint16_t scrH,
                         bool partial_match, bool ignore_punct, uint8_t scope,
-                        const char* dict_name = nullptr) {
+                        const char* dict_name = nullptr,
+                        const char* scope_label = nullptr,
+                        const char* const* scope_opts = nullptr,
+                        uint8_t scope_count = 0) {
     int16_t  optY   = kbY(scrH) - optH();
     uint16_t opt_bg = (bg == TFT_WHITE) ? (uint16_t)0xBDF7 : (uint16_t)0x1082;
     uint16_t bdr    = (bg == TFT_WHITE) ? (uint16_t)0x8430 : (uint16_t)0x4208;
@@ -138,16 +141,19 @@ static void drawOptions(TFT_eSPI& tft, uint16_t fg, uint16_t bg,
         tft.setTextColor((uint16_t)TFT_BLACK, hi_bg);
         tft.drawString(b, 57, r2y + (OPT_ROW_H - 8) / 2, 1);
     } else {
-        tft.drawString("Scope:", 6, r2y + (OPT_ROW_H - 8) / 2, 1);
-        static const char* SCOPES[3] = { "Bible", "Section", "Book" };
-        int16_t bx = 52;
-        for (uint8_t i = 0; i < 3; i++) {
-            int16_t bw  = (int16_t)tft.textWidth(SCOPES[i], 1) + 8;
+        static const char* DEF_SCOPES[3] = { "Bible", "Section", "Book" };
+        const char* label = scope_label ? scope_label : "Scope:";
+        const char* const* opts = scope_opts ? scope_opts : DEF_SCOPES;
+        uint8_t cnt = scope_count ? scope_count : 3;
+        tft.drawString(label, 6, r2y + (OPT_ROW_H - 8) / 2, 1);
+        int16_t bx = 6 + (int16_t)tft.textWidth(label, 1) + 8;
+        for (uint8_t i = 0; i < cnt; i++) {
+            int16_t bw  = (int16_t)tft.textWidth(opts[i], 1) + 8;
             bool    sel = (scope == i);
             tft.fillRoundRect(bx, r2y + 4, bw, OPT_ROW_H - 8, 3, sel ? hi_bg : opt_bg);
             tft.drawRoundRect(bx, r2y + 4, bw, OPT_ROW_H - 8, 3, sel ? fg : bdr);
             tft.setTextColor(sel ? (uint16_t)TFT_BLACK : fg, sel ? hi_bg : opt_bg);
-            tft.drawString(SCOPES[i], bx + 4, r2y + (OPT_ROW_H - 8) / 2, 1);
+            tft.drawString(opts[i], bx + 4, r2y + (OPT_ROW_H - 8) / 2, 1);
             bx += bw + 4;
         }
     }
@@ -413,6 +419,9 @@ bool bibleKeyboardInput(TFT_eSPI& tft,
                         bool*       partial_match,
                         bool*       ignore_punct,
                         uint8_t*    scope,
+                        const char*        scope_label,
+                        const char* const* scope_opts,
+                        uint8_t            scope_count,
                         const char* const* dict_names,
                         uint8_t            dict_count,
                         uint8_t*           dict_sel) {
@@ -436,7 +445,8 @@ bool bibleKeyboardInput(TFT_eSPI& tft,
         bool    pm = partial_match ? *partial_match : true;
         bool    ip = ignore_punct  ? *ignore_punct  : true;
         uint8_t sc = scope         ? *scope         : 0;
-        drawOptions(tft, fg, bg, scrW, scrH, pm, ip, sc, curDictName());
+        drawOptions(tft, fg, bg, scrW, scrH, pm, ip, sc, curDictName(),
+                    scope_label, scope_opts, scope_count);
     }
     drawKeyboard(tft, fg, bg, scrW, scrH, layout, caps);
 
@@ -464,12 +474,14 @@ bool bibleKeyboardInput(TFT_eSPI& tft,
                 } else if (row == 2 && dict_sel && dict_count > 1) {
                     *dict_sel = (uint8_t)((*dict_sel + 1) % dict_count);
                 } else if (row == 2 && scope) {
-                    *scope = (*scope + 1) % 3;
+                    uint8_t cnt = scope_count ? scope_count : 3;
+                    *scope = (uint8_t)((*scope + 1) % cnt);
                 }
                 bool    pm = partial_match ? *partial_match : true;
                 bool    ip = ignore_punct  ? *ignore_punct  : true;
                 uint8_t sc = scope         ? *scope         : 0;
-                drawOptions(tft, fg, bg, scrW, scrH, pm, ip, sc, curDictName());
+                drawOptions(tft, fg, bg, scrW, scrH, pm, ip, sc, curDictName(),
+                            scope_label, scope_opts, scope_count);
                 continue;
             }
 
