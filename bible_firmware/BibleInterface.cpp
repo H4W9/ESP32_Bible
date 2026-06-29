@@ -150,8 +150,28 @@ static const ThemeDef THEMES[] = {
     { 0x2104, 0xE73C, 0x4209, 0x8410, true,  "Gray"   },  // dark gray / near-white
     { 0x0866, 0xFFFF, 0x190C, 0x73D4, true,  "Navy"   },  // deep blue / white
     { 0x0141, 0xCF99, 0x0242, 0x646C, true,  "Forest" },  // dark green / pale green
+    { 0x28E2, 0xE6B6, 0x51C5, 0x93CB, true,  "Mocha"  },  // dark brown / cream
+    { 0x0105, 0xBF5E, 0x020A, 0x5CB4, true,  "Ocean"  },  // deep teal / pale cyan
+    { 0x2085, 0xE65D, 0x420A, 0x9B74, true,  "Plum"   },  // dark purple / lilac
+    { 0x0000, 0xFD80, 0x28E0, 0x82C0, true,  "Amber"  },  // black / amber
+    { 0x2883, 0xF6BA, 0x5905, 0xAB6F, true,  "Rose"   },  // dark maroon / pink
+    { 0xE7BD, 0x21C5, 0x650F, 0x7D51, false, "Mint"   },  // pale mint / dark green
+    { 0x30C8, 0xFD4B, 0x718A, 0xD3CC, true,  "Sunset"  }, // dusk purple / warm orange
+    { 0x0842, 0x07F9, 0x0249, 0x04B1, true,  "Cyber"   }, // near-black / neon cyan
+    { 0x20C2, 0xD5D1, 0x51C4, 0x93CB, true,  "Coffee"  }, // dark brown / tan
+    { 0xE79F, 0x1989, 0x6497, 0x8516, false, "Arctic"  }, // icy light / deep blue
+    { 0x1801, 0xFE59, 0x6802, 0xBB0D, true,  "Crimson" }, // dark red / pink
+    { 0xEF5F, 0x394A, 0x8BD7, 0x9476, false, "Lavender"}, // pale violet / plum
+    { 0x0000, 0xFFFF, 0x0841, 0x4208, true,  "Neon"   },  // black / white + rainbow outlines
 };
-static const uint8_t THEME_COUNT = 7;
+static const uint8_t THEME_COUNT = 20;
+static const uint8_t THEME_NEON  = 19;   // index of the Neon theme (last entry)
+
+// Bright saturated colours cycled for neon outlines.
+static const uint16_t NEON_HUES[] = {
+    0xF800, 0xFD20, 0xFFE0, 0x07E0, 0x07FF, 0x041F, 0x781F, 0xF81F
+};
+static const uint8_t NEON_COUNT = 8;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Section metadata
@@ -413,6 +433,13 @@ uint16_t BibleInterface::font_fg() const {
     if (font_color_idx == 0 || font_color_idx >= FONT_COLOR_COUNT) return fg();
     return FONT_COLOR_VAL[font_color_idx];
 }
+bool BibleInterface::isNeon() const { return theme_idx == THEME_NEON; }
+// Outline colour for borders/dividers: a stable rainbow hue (seeded by element
+// position) when the Neon theme is active, otherwise the caller's default.
+uint16_t BibleInterface::edgeColor(int16_t seed, uint16_t def) const {
+    if (!isNeon()) return def;
+    return NEON_HUES[(uint16_t)(seed < 0 ? -seed : seed) % NEON_COUNT];
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Layout helpers
@@ -458,7 +485,7 @@ void BibleInterface::drawHeader(const char* title, bool show_back) {
     if (show_back) {
         // Same style as nav bar buttons: hdr_bg fill + dim_fg border
         tft.fillRoundRect(2, 3, 40, 22, 4, hdr_bg());
-        tft.drawRoundRect(2, 3, 40, 22, 4, dim_fg());
+        tft.drawRoundRect(2, 3, 40, 22, 4, edgeColor(0, dim_fg()));
         tft.setTextColor(TFT_WHITE, hdr_bg());
         tft.drawCentreString("<", 22, 10, 1);
     }
@@ -483,7 +510,7 @@ void BibleInterface::drawHeader(const char* title, bool show_back) {
     if (view != BV_MAIN_MENU) {
         int16_t sb_x = (int16_t)scrW() - 63;
         tft.fillRoundRect(sb_x,     3, 28, 22, 4, hdr_bg());
-        tft.drawRoundRect(sb_x,     3, 28, 22, 4, dim_fg());
+        tft.drawRoundRect(sb_x,     3, 28, 22, 4, edgeColor(3, dim_fg()));
         // Magnifying glass inside the button (circle + diagonal handle)
         int16_t cx = sb_x + 13;   // horizontal centre of button
         tft.drawCircle(cx,     14, 5, TFT_WHITE);
@@ -508,7 +535,7 @@ void BibleInterface::drawNavBar(const char* left, const char* mid, const char* r
 
     // Nav area background + divider line
     tft.fillRect(0, y, scrW(), navH(), bg());
-    tft.drawFastHLine(0, y, scrW(), dark_mode ? 0x2104 : 0xC618);
+    tft.drawFastHLine(0, y, scrW(), edgeColor(5, dark_mode ? 0x2104 : 0xC618));
 
     // Draw each non-empty label as a rounded button
     const char* labels[3] = { left, mid, right };
@@ -517,7 +544,7 @@ void BibleInterface::drawNavBar(const char* left, const char* mid, const char* r
         uint16_t cx = i * third + third / 2;
         uint16_t bx = cx - bw / 2;
         tft.fillRoundRect(bx, by, bw, bh, 4, hdr_bg());
-        tft.drawRoundRect(bx, by, bw, bh, 4, dim_fg());
+        tft.drawRoundRect(bx, by, bw, bh, 4, edgeColor(i * 2, dim_fg()));
         tft.setTextColor(TFT_WHITE, hdr_bg());
         tft.drawCentreString(labels[i], cx, by + (bh - 8) / 2, 1);
     }
@@ -560,7 +587,8 @@ void BibleInterface::drawListRow(int16_t y_px, const char* text, bool selected, 
         tft.drawString(">", scrW() - 20, ty, 2);
     }
     // divider
-    tft.drawFastHLine(0, y_px + itemH() - 1, scrW(), dark_mode ? 0x2104 : 0xC618);
+    tft.drawFastHLine(0, y_px + itemH() - 1, scrW(),
+                      edgeColor(y_px / (int16_t)itemH(), dark_mode ? 0x2104 : 0xC618));
 }
 
 void BibleInterface::drawScrollBar(int16_t total, int16_t vis, int16_t top) {
@@ -571,7 +599,7 @@ void BibleInterface::drawScrollBar(int16_t total, int16_t vis, int16_t top) {
     tft.fillRect(barX, barY, 6, barH, dark_mode ? 0x2104 : 0xC618);
     int16_t thumbH = max((int16_t)10, (int16_t)(barH * vis / total));
     int16_t thumbY = barY + (int16_t)((int32_t)top * (barH - thumbH) / max(1, total - vis));
-    tft.fillRect(barX, thumbY, 6, thumbH, dim_fg());
+    tft.fillRect(barX, thumbY, 6, thumbH, edgeColor(top, dim_fg()));
 }
 
 // Redraws only the list content area (rows + scrollbar) without touching the
@@ -667,7 +695,7 @@ void BibleInterface::redrawChapterContent() {
             bool     sel     = (ch == cur_chapter) || (ch == (int16_t)menu_sel);
             uint16_t tile_bg = sel ? sel_bg() : bg();
             tft.fillRect(x, y, tile_w, tile_h, tile_bg);
-            tft.drawRect(x, y, tile_w, tile_h, dark_mode ? 0x2104 : 0xC618);
+            tft.drawRect(x, y, tile_w, tile_h, edgeColor(ch, dark_mode ? 0x2104 : 0xC618));
             char buf[5];
             snprintf(buf, sizeof(buf), "%d", ch);
             tft.setTextColor(fg(), tile_bg);
@@ -771,7 +799,7 @@ void BibleInterface::drawChapterSelect() {
 
             uint16_t tile_bg = sel ? sel_bg() : bg();
             tft.fillRect(x, y, tile_w, tile_h, tile_bg);
-            tft.drawRect(x, y, tile_w, tile_h, dark_mode ? 0x2104 : 0xC618);
+            tft.drawRect(x, y, tile_w, tile_h, edgeColor(ch, dark_mode ? 0x2104 : 0xC618));
 
             char buf[5];
             snprintf(buf, sizeof(buf), "%d", ch);
@@ -954,8 +982,9 @@ void BibleInterface::redrawSettingsContent() {
         int16_t  txt_y = btn_y + (btn_h - 16) / 2;
         int16_t  nam_y = row_y + (itemH() - 16) / 2;
         int16_t  fwd_bx = (int16_t)scrW() - 9 - btn_w;   // -9 clears the 6px scrollbar
+        int16_t  eseed = row_y / (int16_t)itemH();
         tft.fillRoundRect(fwd_bx, btn_y, btn_w, btn_h, btn_r, hdr_bg());
-        tft.drawRoundRect(fwd_bx, btn_y, btn_w, btn_h, btn_r, dim_fg());
+        tft.drawRoundRect(fwd_bx, btn_y, btn_w, btn_h, btn_r, edgeColor(eseed, dim_fg()));
         tft.setTextColor(TFT_WHITE, hdr_bg());
         tft.drawCentreString(">", fwd_bx + btn_w / 2, txt_y, 2);
         int16_t nam_w = (int16_t)tft.textWidth(name, 2);
@@ -964,7 +993,7 @@ void BibleInterface::redrawSettingsContent() {
         tft.drawString(name, nam_x, nam_y, 2);
         int16_t bwd_bx = nam_x - 4 - btn_w;
         tft.fillRoundRect(bwd_bx, btn_y, btn_w, btn_h, btn_r, hdr_bg());
-        tft.drawRoundRect(bwd_bx, btn_y, btn_w, btn_h, btn_r, dim_fg());
+        tft.drawRoundRect(bwd_bx, btn_y, btn_w, btn_h, btn_r, edgeColor(eseed + 4, dim_fg()));
         tft.setTextColor(TFT_WHITE, hdr_bg());
         tft.drawCentreString("<", bwd_bx + btn_w / 2, txt_y, 2);
     };
@@ -989,8 +1018,9 @@ void BibleInterface::redrawSettingsContent() {
             int16_t  txt_y = btn_y + (btn_h - 16) / 2;
             int16_t  num_y = row_y + (itemH() - 16) / 2;
             int16_t plus_bx = (int16_t)scrW() - 9 - btn_w;   // -9 clears the 6px scrollbar
+            int16_t eseed   = row_y / (int16_t)itemH();
             tft.fillRoundRect(plus_bx, btn_y, btn_w, btn_h, btn_r, hdr_bg());
-            tft.drawRoundRect(plus_bx, btn_y, btn_w, btn_h, btn_r, dim_fg());
+            tft.drawRoundRect(plus_bx, btn_y, btn_w, btn_h, btn_r, edgeColor(eseed, dim_fg()));
             tft.setTextColor(TFT_WHITE, hdr_bg());
             tft.drawCentreString("+", plus_bx + btn_w / 2, txt_y, 2);
             char nbuf[8];
@@ -1001,7 +1031,7 @@ void BibleInterface::redrawSettingsContent() {
             tft.drawString(nbuf, num_x, num_y, 2);
             int16_t minus_bx = num_x - 4 - btn_w;
             tft.fillRoundRect(minus_bx, btn_y, btn_w, btn_h, btn_r, hdr_bg());
-            tft.drawRoundRect(minus_bx, btn_y, btn_w, btn_h, btn_r, dim_fg());
+            tft.drawRoundRect(minus_bx, btn_y, btn_w, btn_h, btn_r, edgeColor(eseed + 4, dim_fg()));
             tft.setTextColor(TFT_WHITE, hdr_bg());
             tft.drawCentreString("-", minus_bx + btn_w / 2, txt_y, 2);
         } else {
@@ -2271,7 +2301,7 @@ void BibleInterface::drawMainMenu() {
     for (uint8_t i = 0; i < 3; i++) {
         int16_t y = top + i * (bh + gap);
         tft.fillRoundRect(margin, y, scrW() - 2 * margin, bh, 12, btn_col[i]);
-        tft.drawRoundRect(margin, y, scrW() - 2 * margin, bh, 12, dim_fg());
+        tft.drawRoundRect(margin, y, scrW() - 2 * margin, bh, 12, edgeColor(i * 3, dim_fg()));
         tft.setTextColor(fg(), btn_col[i]);
         tft.drawCentreString(MENU_LABELS[i], scrW() / 2, y + (bh - 26) / 2, 4);
     }
@@ -3689,14 +3719,20 @@ void BibleInterface::drawSearchResultRow(int16_t y_px, uint16_t idx, bool sel) {
     uint16_t bg_col = sel ? sel_bg() : bg();
     tft.fillRect(0, y_px, row_w, row_h, bg_col);
     // Divider line at bottom of row
-    tft.drawFastHLine(0, y_px + row_h - 1, row_w, dim_fg());
+    tft.drawFastHLine(0, y_px + row_h - 1, row_w, edgeColor(y_px / (int16_t)srchH(), dim_fg()));
 
     // Reference line in font 2 (16px). Rendered char-by-char so song titles with
     // umlauts (private codes) display correctly.
     {
         BibleSearchResult& r = search_results[idx];
         char ref[48];
-        if (mode == MODE_SONGS) {
+        if (mode == MODE_DICT) {
+            // Show the entry headword (text before " - " in the "word - definition" pair).
+            const char* dash = strstr(r.snippet, " - ");
+            size_t len = dash ? (size_t)(dash - r.snippet) : strlen(r.snippet);
+            if (len > sizeof(ref) - 1) len = sizeof(ref) - 1;
+            memcpy(ref, r.snippet, len); ref[len] = 0;
+        } else if (mode == MODE_SONGS) {
             if (r.trans == cur_trans) {
                 snprintf(ref, sizeof(ref), "%s", bookDisplay(r.book));  // song title
             } else {
@@ -4600,7 +4636,11 @@ bool BibleInterface::searchBible(const char* query) {
                                     if (m) { match_pos = si; break; }
                                 }
                                 size_t half = (BIBLE_SRCH_SNIPPET_LEN - 1) / 2;
-                                size_t snip_start = (match_pos > half) ? match_pos - half : 0;
+                                // Dictionary entries ("word - definition") read best from the
+                                // start so the word pair is visible; others centre on the match.
+                                size_t snip_start = (mode == MODE_DICT)
+                                    ? 0
+                                    : ((match_pos > half) ? match_pos - half : 0);
                                 strncpy(r.snippet, vtext + snip_start, BIBLE_SRCH_SNIPPET_LEN - 1);
                                 r.snippet[BIBLE_SRCH_SNIPPET_LEN - 1] = 0;
                             }

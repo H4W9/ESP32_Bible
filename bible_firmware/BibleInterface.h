@@ -326,6 +326,8 @@ private:
     uint16_t dim_fg()  const;
     uint16_t verse_num_fg() const;
     uint16_t font_fg()      const;  // reading-text colour (Font Color setting)
+    bool     isNeon()       const;  // true when the Neon (rainbow-outline) theme is active
+    uint16_t edgeColor(int16_t seed, uint16_t def) const; // outline colour: rainbow if neon, else def
 
     // ── Structure accessors (Bible static table  OR  runtime Songs/Dict) ───
     uint16_t numBooks() const { return (mode == MODE_BIBLE) ? BIBLE_BOOK_COUNT : rt_book_count; }
