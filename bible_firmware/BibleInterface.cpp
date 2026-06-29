@@ -293,7 +293,7 @@ BibleInterface::BibleInterface()
       mode(MODE_BIBLE), rt_books(nullptr), rt_book_count(0),
       rt_secs(nullptr), rt_sec_count(0), rt_pages(nullptr), rt_page_count(0), rt_pages_book(0xFFFF),
       view(BV_MAIN_MENU), dark_mode(true), theme_idx(0), font_num(2), font_color_idx(0),
-      vnum_color_idx(0), orientation(0), accent_def(false), needs_redraw(true),
+      vnum_color_idx(0), orientation(0), menu_font_color_idx(0), accent_def(false), needs_redraw(true),
       settings_scope(0), settings_from_menu(false), set_row_n(0),
       sc_trans_count(0), sc_trans_cur(0),
       menu_sel(0), menu_scroll(0), read_line(0),
@@ -352,6 +352,7 @@ void BibleInterface::RunSetup() {
     if (accent_idx >= ACCENT_COUNT) accent_idx = 0;
     accent_def = (prefs.getUChar("accentdef", 0) != 0);
     font_num   = 2;
+    loadMenuChrome();   // global chrome text colour
     blInit();   // must run before runTouchCalibration() so the backlight is on
 
     // Boot splash (SD /splash.raw) — shown in portrait for 2.5 s, then orientation restored.
@@ -453,6 +454,18 @@ uint16_t BibleInterface::themeHighlight() const {
     int bl = ab + (bb - ab) * t / 255;
     return (uint16_t)((r << 11) | (g << 5) | bl);
 }
+// Global UI chrome text colour (header titles, nav/footer buttons, menu labels).
+// Driven by the Main Menu scope's Font Color so it can be themed globally.
+uint16_t BibleInterface::chromeFg() const {
+    return (menu_font_color_idx == 0 || menu_font_color_idx >= FONT_COLOR_COUNT)
+           ? TFT_WHITE : FONT_COLOR_VAL[menu_font_color_idx];
+}
+void BibleInterface::loadMenuChrome() {
+    Preferences p;
+    menu_font_color_idx = 0;
+    if (p.begin("menu", true)) { menu_font_color_idx = p.getUChar("fontcol", 0); p.end(); }
+    if (menu_font_color_idx >= FONT_COLOR_COUNT) menu_font_color_idx = 0;
+}
 bool BibleInterface::isNeon() const { return theme_idx == THEME_NEON; }
 // Outline colour for borders/dividers: a stable rainbow hue (seeded by element
 // position) when the Neon theme is active, otherwise the caller's default.
@@ -502,11 +515,12 @@ static int16_t tftCharUTF8(TFT_eSPI& tft, uint8_t c, int16_t x, int16_t y,
 
 void BibleInterface::drawHeader(const char* title, bool show_back) {
     tft.fillRect(0, 0, scrW(), hdrH(), hdr_bg());
+    uint16_t ch_fg = chromeFg();   // global chrome text colour (Main Menu Font Color)
     if (show_back) {
         // Same style as nav bar buttons: hdr_bg fill + dim_fg border
         tft.fillRoundRect(2, 3, 40, 22, 4, hdr_bg());
         tft.drawRoundRect(2, 3, 40, 22, 4, edgeColor(0, dim_fg()));
-        tft.setTextColor(TFT_WHITE, hdr_bg());
+        tft.setTextColor(ch_fg, hdr_bg());
         tft.drawCentreString("<", 22, 10, 1);
     }
     // Title — rendered char-by-char so umlauts/ß (private codes) show correctly
@@ -519,9 +533,9 @@ void BibleInterface::drawHeader(const char* title, bool show_back) {
         int16_t tw     = textWidthUTF8(title, 2);
         int16_t tx0    = (int16_t)(scrW() / 2) - tw / 2;
         if (tx0 < left)  tx0 = left;
-        tft.setTextColor(TFT_WHITE, hdr_bg());
+        tft.setTextColor(ch_fg, hdr_bg());
         for (const char* p = title; *p && tx0 < right; p++)
-            tx0 += tftCharUTF8(tft, (uint8_t)*p, tx0, 6, 2, TFT_WHITE);
+            tx0 += tftCharUTF8(tft, (uint8_t)*p, tx0, 6, 2, ch_fg);
     }
 
     // Search button — same bordered-box style as the back button.
@@ -534,14 +548,15 @@ void BibleInterface::drawHeader(const char* title, bool show_back) {
         tft.drawRoundRect(sb_x,     3, 28, 22, 4, edgeColor(3, dim_fg()));
         // Magnifying glass inside the button (circle + diagonal handle)
         int16_t cx = sb_x + 13;   // horizontal centre of button
-        tft.drawCircle(cx,     14, 5, TFT_WHITE);
-        tft.drawLine  (cx + 4, 18, cx + 7, 21, TFT_WHITE);
+        tft.drawCircle(cx,     14, 5, ch_fg);
+        tft.drawLine  (cx + 4, 18, cx + 7, 21, ch_fg);
     }
 
 #ifdef HAS_BATTERY
     if (batt_pct >= 0) {
         char pct[8];
         snprintf(pct, sizeof(pct), "%d%%", (int)batt_pct);
+        tft.setTextColor(ch_fg, hdr_bg());
         tft.drawRightString(pct, (int16_t)(scrW() - 3), 10, 1);
     }
 #endif
@@ -566,7 +581,7 @@ void BibleInterface::drawNavBar(const char* left, const char* mid, const char* r
         uint16_t bx = cx - bw / 2;
         tft.fillRoundRect(bx, by, bw, bh, 4, hdr_bg());
         tft.drawRoundRect(bx, by, bw, bh, 4, edgeColor(i * 2, dim_fg()));
-        tft.setTextColor(TFT_WHITE, hdr_bg());
+        tft.setTextColor(chromeFg(), hdr_bg());
         tft.drawCentreString(labels[i], cx, by + (bh - 8) / 2, 1);
     }
 }
@@ -1818,8 +1833,9 @@ void BibleInterface::handleSettingsInput() {
                 font_color_idx = fwd ? (uint8_t)((font_color_idx + 1) % FONT_COLOR_COUNT)
                                      : (font_color_idx == 0 ? FONT_COLOR_COUNT - 1 : font_color_idx - 1);
                 writeScoped("fontcol", font_color_idx);
-                redrawSettingsContent();
-                break;
+                loadMenuChrome();          // chrome text follows the Main Menu font colour
+                drawSettings();            // repaint so chrome (header/footer) updates live
+                return;
             case SR_VNUMCOL:
                 vnum_color_idx = fwd ? (uint8_t)((vnum_color_idx + 1) % FONT_COLOR_COUNT)
                                      : (vnum_color_idx == 0 ? FONT_COLOR_COUNT - 1 : vnum_color_idx - 1);
@@ -2465,6 +2481,7 @@ void BibleInterface::goToMainMenu() {
     if (accent_idx >= ACCENT_COUNT) accent_idx = 0;
     accent_def = (prefs.getUChar("accentdef", 0) != 0);
     font_num   = 2;
+    loadMenuChrome();
     // Keep the current backlight level (avoids a brightness flash when returning
     // from a mode); each mode still applies its own brightness on entry.
     freeRuntime();
@@ -2505,7 +2522,7 @@ void BibleInterface::drawMainMenu() {
         int16_t y = top + i * (bh + gap);
         tft.fillRoundRect(margin, y, scrW() - 2 * margin, bh, 12, btn_col[i]);
         tft.drawRoundRect(margin, y, scrW() - 2 * margin, bh, 12, edgeColor(i * 3, dim_fg()));
-        tft.setTextColor(fg(), btn_col[i]);
+        tft.setTextColor(chromeFg(), btn_col[i]);
         tft.drawCentreString(MENU_LABELS[i], scrW() / 2, y + (bh - 26) / 2, 4);
     }
     // Smaller Settings button under Dictionary.
@@ -2514,7 +2531,7 @@ void BibleInterface::drawMainMenu() {
     int16_t sx = ((int16_t)scrW() - sw) / 2;
     tft.fillRoundRect(sx, sy, sw, sh, 10, hdr_bg());
     tft.drawRoundRect(sx, sy, sw, sh, 10, edgeColor(9, dim_fg()));
-    tft.setTextColor(fg(), hdr_bg());
+    tft.setTextColor(chromeFg(), hdr_bg());
     tft.drawCentreString("Settings", scrW() / 2, sy + (sh - 16) / 2, 2);
 }
 

@@ -194,6 +194,7 @@ private:
     uint8_t   font_color_idx; // 0 = Default (theme fg); else index into FONT_COLOR_VAL[]
     uint8_t   vnum_color_idx; // 0 = Default (teal); else index into FONT_COLOR_VAL[]
     uint8_t   orientation;    // 0-3 screen rotation (global, "menu" NVS)
+    uint8_t   menu_font_color_idx; // global chrome text colour (Main Menu scope Font Color)
     bool      accent_def;     // Highlight uses the theme-default colour (vs accent_idx)
     bool      needs_redraw;
 
@@ -348,6 +349,8 @@ private:
     uint16_t dim_fg()  const;
     uint16_t verse_num_fg() const;
     uint16_t font_fg()      const;  // reading-text colour (Font Color setting)
+    uint16_t chromeFg()     const;  // global UI chrome text (header/nav/menu) — Main Menu Font Color
+    void     loadMenuChrome();      // refresh menu_font_color_idx from the "menu" NVS namespace
     bool     isNeon()       const;  // true when the Neon (rainbow-outline) theme is active
     uint16_t edgeColor(int16_t seed, uint16_t def) const; // outline colour: rainbow if neon, else def
 
