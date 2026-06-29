@@ -1789,6 +1789,26 @@ static inline void* rt_alloc(size_t sz) {
 }
 #define RT_MALLOC(sz) rt_alloc(sz)
 
+// Map the first character of a dictionary query to its letter-bucket book code
+// (must match generate_dict_xml.py: a-z -> "A".."Z", digit -> "NUM", else "SYM";
+// German umlauts fold to their base letter, matching the generator's bucketing).
+static void dictBucketCode(char first, char* out) {
+    unsigned char c = (unsigned char)first;
+    char base = 0;
+    if      (c >= 'A' && c <= 'Z') base = (char)(c - 'A' + 'a');
+    else if (c >= 'a' && c <= 'z') base = (char)c;
+    else if (c == 0x80 || c == 0x81) base = 'a';   // Ä ä
+    else if (c == 0x82 || c == 0x83) base = 'o';   // Ö ö
+    else if (c == 0x84 || c == 0x85) base = 'u';   // Ü ü
+    else if (c == 0x86)              base = 's';    // ß
+    if (base >= 'a' && base <= 'z') { out[0] = (char)(base - 'a' + 'A'); out[1] = 0; return; }
+    if (c >= '0' && c <= '9') { strcpy(out, "NUM"); return; }
+    strcpy(out, "SYM");
+}
+
+// Last loadToc() failure reason (shown on screen by selectTranslation).
+static const char* g_toc_err = "";
+
 void BibleInterface::freeRuntime() {
     if (rt_books)     { free(rt_books);     rt_books     = nullptr; }
     if (rt_secs)      { free(rt_secs);      rt_secs      = nullptr; }
@@ -1807,12 +1827,14 @@ bool BibleInterface::loadToc(const char* stem) {
 
     // Open ONCE and read the whole file into a buffer, then parse from memory.
     // (Avoids reopening the same SD file twice, which is unreliable on some builds.)
+    g_toc_err = "";
     File f = SD.open(path);
-    if (!f) { Serial.printf("[%s] TOC missing: %s\n", nvsNamespace(), path); return false; }
+    if (!f) { g_toc_err = "file not found"; Serial.printf("[%s] TOC missing: %s\n", nvsNamespace(), path); return false; }
+    if (f.isDirectory()) { f.close(); g_toc_err = "is a directory"; return false; }
     size_t sz = f.size();
-    if (sz == 0) { f.close(); Serial.printf("[%s] TOC empty: %s\n", nvsNamespace(), path); return false; }
+    if (sz == 0) { f.close(); g_toc_err = "file is empty"; Serial.printf("[%s] TOC empty: %s\n", nvsNamespace(), path); return false; }
     char* buf = (char*)RT_MALLOC(sz + 1);
-    if (!buf) { f.close(); Serial.println(F("[toc] alloc fail")); return false; }
+    if (!buf) { f.close(); g_toc_err = "low memory (enable PSRAM)"; Serial.println(F("[toc] buf alloc fail")); return false; }
     size_t got = f.read((uint8_t*)buf, sz);
     f.close();
     buf[got] = 0;
@@ -1829,12 +1851,12 @@ bool BibleInterface::loadToc(const char* stem) {
         if (!nl) break;
         ln = nl + 1;
     }
-    if (nbook == 0) { free(buf); return false; }
+    if (nbook == 0) { free(buf); g_toc_err = "no B| rows (bad TOC)"; return false; }
 
     rt_secs      = (RtSec*)   RT_MALLOC(sizeof(RtSec)   * (nsec ? nsec : 1));
     rt_books     = (RtBook*)  RT_MALLOC(sizeof(RtBook)  * nbook);
     book_offsets = (uint32_t*)RT_MALLOC(sizeof(uint32_t)* nbook);
-    if (!rt_secs || !rt_books || !book_offsets) { free(buf); freeRuntime(); return false; }
+    if (!rt_secs || !rt_books || !book_offsets) { free(buf); freeRuntime(); g_toc_err = "low memory (enable PSRAM)"; return false; }
     book_offsets_cap = nbook;
 
     // Pass 2: fill (parse each line in place; field separator is '|').
@@ -1922,6 +1944,23 @@ void BibleInterface::goToMainMenu() {
 void BibleInterface::drawMainMenu() {
     tft.fillScreen(bg());
     drawHeader("ESP-32 Library", false);
+
+    // Each button is shaded with that mode's own saved highlight (accent) colour,
+    // read from its NVS namespace. The dark/light variant matches the menu's theme
+    // so the accents contrast with the menu background.
+    static const char* const MODE_NS[3] = { "bible", "songs", "dict" };
+    uint16_t btn_col[3];
+    for (uint8_t i = 0; i < 3; i++) {
+        Preferences mp;
+        uint8_t ac = 0;
+        if (mp.begin(MODE_NS[i], true)) {       // read-only
+            ac = mp.getUChar("accent", 0);
+            mp.end();
+        }
+        if (ac >= ACCENT_COUNT) ac = 0;
+        btn_col[i] = dark_mode ? ACCENT_DARK[ac] : ACCENT_LIGHT[ac];
+    }
+
     const int16_t margin = 16;
     const int16_t gap    = 14;
     int16_t top   = (int16_t)contentY() + 12;
@@ -1929,9 +1968,9 @@ void BibleInterface::drawMainMenu() {
     int16_t bh    = (avail - gap * 2) / 3;
     for (uint8_t i = 0; i < 3; i++) {
         int16_t y = top + i * (bh + gap);
-        tft.fillRoundRect(margin, y, scrW() - 2 * margin, bh, 12, sel_bg());
+        tft.fillRoundRect(margin, y, scrW() - 2 * margin, bh, 12, btn_col[i]);
         tft.drawRoundRect(margin, y, scrW() - 2 * margin, bh, 12, dim_fg());
-        tft.setTextColor(fg(), sel_bg());
+        tft.setTextColor(fg(), btn_col[i]);
         tft.drawCentreString(MENU_LABELS[i], scrW() / 2, y + (bh - 26) / 2, 4);
     }
 }
@@ -2024,11 +2063,14 @@ void BibleInterface::selectTranslation(uint16_t idx) {
             drawHeader("ESP-32 Library", false);
             tft.setTextColor(TFT_RED, bg());
             char msg[72];
-            snprintf(msg, sizeof(msg), "Missing %s/%s.toc", basePath(), trans_stems[cur_trans]);
-            tft.drawCentreString(msg, scrW() / 2, scrH() / 2 - 12, 2);
+            snprintf(msg, sizeof(msg), "%s/%s.toc", basePath(), trans_stems[cur_trans]);
+            tft.drawCentreString(msg, scrW() / 2, scrH() / 2 - 24, 2);
             tft.setTextColor(dim_fg(), bg());
-            tft.drawCentreString("Copy the .toc next to the .xml", scrW() / 2, scrH() / 2 + 10, 2);
-            tft.drawCentreString("Tap to go back", scrW() / 2, scrH() / 2 + 32, 2);
+            char reason[64];
+            snprintf(reason, sizeof(reason), "TOC error: %s", g_toc_err[0] ? g_toc_err : "unknown");
+            tft.drawCentreString(reason, scrW() / 2, scrH() / 2 - 2, 2);
+            tft.drawCentreString("Copy the .toc next to the .xml", scrW() / 2, scrH() / 2 + 20, 2);
+            tft.drawCentreString("Tap to go back", scrW() / 2, scrH() / 2 + 42, 2);
             mode = MODE_BIBLE;
             view = BV_MAIN_MENU;
             needs_redraw = false;
@@ -3181,7 +3223,15 @@ void BibleInterface::goToSearchResults() {
 // ─────────────────────────────────────────────────────────────────────────────
 void BibleInterface::drawSearchInput() {
     tft.fillScreen(bg());
-    drawHeader("Search", true);
+    if (mode == MODE_DICT && trans_count > 0) {
+        // Header shows the active dictionary; tapping it (centre) cycles to the next.
+        String nm = trans_stems[cur_trans]; nm.toUpperCase();
+        char title[40];
+        snprintf(title, sizeof(title), "Search: %s", nm.c_str());
+        drawHeader(title, true);
+    } else {
+        drawHeader("Search", true);
+    }
 
     if (search_hist_count == 0) {
         tft.setTextColor(dim_fg(), bg());
@@ -3531,7 +3581,17 @@ void BibleInterface::handleSearchInputInput() {
         if (touchInHeader(tx, ty)) {
             touch_was_down = false;
             if (touchInSearchIcon(tx, ty)) { goToSearchInput(); return; }
-            if (tx < 48) goBack();
+            if (tx < 48) { goBack(); return; }
+            // Dictionary: tap the header title to switch which dictionary is searched.
+            if (mode == MODE_DICT && trans_count > 1) {
+                cur_trans = (cur_trans + 1) % trans_count;
+                prefs.putUChar("trans", cur_trans);
+                loadToc(trans_stems[cur_trans]);
+                cached_book = 0xFFFF; cached_chap = 0; cached_count = 0;
+                if (cur_book >= numBooks()) cur_book = 0;
+                cur_sec = (numBooks() > 0) ? bookSection(cur_book) : 0;
+                needs_redraw = true;
+            }
             return;
         }
         if (touchInNav(tx, ty)) {
@@ -3541,11 +3601,17 @@ void BibleInterface::handleSearchInputInput() {
                 // New — open keyboard, run search if confirmed
                 search_query[0] = 0;
 #ifdef HAS_TOUCH
+                // Dictionary search auto-scopes to the query's letter bucket, so the
+                // Bible/Section/Book scope row is hidden (scope = nullptr) there.
+                const char* kb_title = (mode == MODE_SONGS) ? "Search Songs:"
+                                     : (mode == MODE_DICT)  ? "Search word:"
+                                                            : "Search Bible:";
                 bool ok = bibleKeyboardInput(tft, fg(), bg(),
                                              search_query, BIBLE_SEARCH_QUERY_LEN,
-                                             "Search Bible:",
+                                             kb_title,
                                              &srch_partial_match,
-                                             &srch_ignore_punct, &srch_scope);
+                                             &srch_ignore_punct,
+                                             (mode == MODE_DICT) ? nullptr : &srch_scope);
                 // Persist any option changes the user made inside the keyboard
                 prefs.putBool ("srch_part", srch_partial_match);
                 prefs.putBool ("srch_pnct", srch_ignore_punct);
@@ -3889,6 +3955,30 @@ bool BibleInterface::searchBible(const char* query) {
     uint32_t file_size = (uint32_t)f.size();
     uint32_t last_upd  = 0;
 
+    // Dictionary: only scan the letter-bucket book whose code matches the first
+    // character of the query — seek straight to it and stop at the next book.
+    // (Turns a 100+ MB full-file scan into a quick few-MB range scan.)
+    uint16_t dict_bucket = 0xFFFF;
+    uint32_t prog_base = 0, prog_total = file_size;
+    if (mode == MODE_DICT) {
+        char code[12];
+        dictBucketCode(query[0], code);
+        for (uint16_t b = 0; b < numBooks(); b++) {
+            if (strcmp(bookCode(b), code) == 0) { dict_bucket = b; break; }
+        }
+        if (dict_bucket == 0xFFFF || dict_bucket >= book_offsets_cap) {
+            f.close();
+            drawSearchProgress(1, 1);   // no bucket for this letter → zero results
+            return true;
+        }
+        uint32_t start = book_offsets[dict_bucket];
+        uint32_t next  = (dict_bucket + 1 < numBooks()) ? book_offsets[dict_bucket + 1] : file_size;
+        f.seek(start);
+        last_upd   = start;
+        prog_base  = start;
+        prog_total = (next > start) ? (next - start) : 1;
+    }
+
     XmlState s;
     memset(&s, 0, sizeof(s));
     s.f = f;
@@ -3908,7 +3998,7 @@ bool BibleInterface::searchBible(const char* query) {
         uint32_t pos = (uint32_t)f.position();
         if (pos - last_upd >= 8192) {
             last_upd = pos;
-            drawSearchProgress(pos, file_size);
+            drawSearchProgress(pos - prog_base, prog_total);
             yield();
             // Cancel only if user taps the Cancel button
             {
@@ -3951,12 +4041,18 @@ bool BibleInterface::searchBible(const char* query) {
                             uint16_t bk = 0, ch = 0;
                             uint8_t  vs = 0;
                             if (parseOsisID(osis_id, bk, ch, vs)) {
-                                // Scope filter: skip verses outside selected scope
+                                // Dictionary: we seeked to one letter-bucket book.
+                                // Once a verse from a later book appears, we're done.
+                                if (mode == MODE_DICT && bk != dict_bucket) break;
+                                // Scope filter (Bible/Songs): skip verses outside scope.
+                                // (Dictionary's "scope" is the letter bucket above.)
                                 bool in_scope = true;
-                                if (srch_scope == 1)
-                                    in_scope = (bookSection(bk) == cur_sec);
-                                else if (srch_scope == 2)
-                                    in_scope = (bk == cur_book);
+                                if (mode != MODE_DICT) {
+                                    if (srch_scope == 1)
+                                        in_scope = (bookSection(bk) == cur_sec);
+                                    else if (srch_scope == 2)
+                                        in_scope = (bk == cur_book);
+                                }
                                 if (in_scope) {
                                     vs_book   = bk;
                                     vs_chap   = ch;
@@ -4021,7 +4117,7 @@ bool BibleInterface::searchBible(const char* query) {
     }
     f.close();
     // Final progress bar fill
-    drawSearchProgress(file_size, file_size);
+    drawSearchProgress(prog_total, prog_total);
     return true;
 }
 
