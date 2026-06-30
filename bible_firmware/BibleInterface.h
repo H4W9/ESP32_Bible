@@ -41,11 +41,13 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // SD card paths
 // ─────────────────────────────────────────────────────────────────────────────
-#define BIBLE_SD_BASE      "/bible"          // directory scanned for .xml files
-#define SONGS_SD_BASE      "/songs"          // Songs mode XML directory
-#define DICT_SD_BASE       "/dictionary"     // Dictionary mode XML directory
-#define BIBLE_BM_FILE      "/bible/bookmarks.txt"
-#define BIBLE_SRCH_HIST_FILE    "/bible/srch_hist.txt"
+// All firmware files live under one SD folder so the card root stays tidy.
+#define SD_LIB_ROOT        "/esp32_library"             // parent folder on the SD card
+#define BIBLE_SD_BASE      SD_LIB_ROOT "/bible"         // directory scanned for .xml files
+#define SONGS_SD_BASE      SD_LIB_ROOT "/songs"         // Songs mode XML directory
+#define DICT_SD_BASE       SD_LIB_ROOT "/dictionary"    // Dictionary mode XML directory
+#define BIBLE_BM_FILE      SD_LIB_ROOT "/bible/bookmarks.txt"
+#define BIBLE_SRCH_HIST_FILE    SD_LIB_ROOT "/bible/srch_hist.txt"
 // Runtime structure tables (Songs / Dictionary — loaded from a .toc beside the .xml)
 #define RT_DISP_LEN        48     // book display name buffer (e.g. song title)
 #define RT_CODE_LEN        12     // osis code buffer (e.g. "S730", "SYM")
@@ -389,7 +391,7 @@ private:
     uint16_t secLen(uint8_t s)          const { return (mode == MODE_BIBLE) ? SEC_BOOK_COUNT_[s] : rt_secs[s].len; }
 
     // ── Mode-parameterized SD paths / NVS namespace ───────────────────────
-    const char* basePath() const;                       // "/bible" | "/songs" | "/dictionary"
+    const char* basePath() const;                       // /esp32_library/{bible,songs,dictionary}
     const char* nvsNamespace() const;                   // "bible" | "songs" | "dict"
     void        bmPath(char* out, size_t n) const;      // <base>/bookmarks.txt
     void        srchHistPath(char* out, size_t n) const;// <base>/srch_hist.txt

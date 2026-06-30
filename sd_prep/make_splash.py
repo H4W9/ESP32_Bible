@@ -4,9 +4,9 @@ make_splash.py
 =====================================================================
 Convert an image into the ESP32 firmware's boot-splash file: a raw
 RGB565 (little-endian) blob sized to the display's native portrait
-resolution. Copy the output to the SD card root as  /splash.raw  — the
-firmware shows it for 2.5 s on boot (and again when you tap the main-menu
-header). If /splash.raw is absent, boot just skips the splash.
+resolution. Copy the output into  /esp32_library/splash.raw  on the SD
+card — the firmware shows it for 2.5 s on boot (and again when you tap the
+main-menu header). If it is absent, boot just skips the splash.
 
 The image is cropped to the screen's portrait aspect ratio, centered on a
 point you choose (default: the right-of-centre area, where the ESP32-C5
@@ -153,7 +153,7 @@ def main():
                 f.write(struct.pack(fmt, v))
 
     print(f"Wrote {args.out}  ({W}x{H}, {W*H*2:,} bytes)")
-    print(f"Copy it to the SD card root as  /splash.raw")
+    print(f"Copy it into  /esp32_library/  on the SD card")
     print(f"Tip: adjust --cx/--cy to re-centre the crop on the chip.")
     print(f"If colours look wrong, re-run adding --bgr (red/blue), --invert, or --swap.")
 

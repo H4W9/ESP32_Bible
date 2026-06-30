@@ -15,11 +15,13 @@ Each script produces, per "translation":
 You copy the resulting files onto the SD card (Dictionary needs `.xml` + `.toc` + `.pgx`;
 Songs needs `.xml` + `.toc`):
 
-| Mode       | SD folder      | Source script             |
-|------------|----------------|---------------------------|
-| Bible      | `/bible/`      | (raw OSIS XML, no script) |
-| Songs      | `/songs/`      | `generate_songs_xml.py`   |
-| Dictionary | `/dictionary/` | `generate_dict_xml.py`    |
+All firmware files live under one folder on the SD card: **`/esp32_library/`**.
+
+| Mode       | SD folder                      | Source script             |
+|------------|--------------------------------|---------------------------|
+| Bible      | `/esp32_library/bible/`        | (raw OSIS XML, no script) |
+| Songs      | `/esp32_library/songs/`        | `generate_songs_xml.py`   |
+| Dictionary | `/esp32_library/dictionary/`   | `generate_dict_xml.py`    |
 
 > **Text the firmware can render:** ASCII, German umlauts (ä ö ü Ä Ö Ü ß — compressed to private
 > byte codes on load), and common typographic marks (curly quotes, en/em dashes, ellipsis — the
@@ -66,8 +68,8 @@ python generate_dict_xml.py wiktionary "kaikki.org-dictionary-English.jsonl" --l
 
 ```cmd
 :: 4) Copy to the SD card (replace E: with your card's drive letter)
-xcopy /Y "songs\*" "E:\songs\"
-xcopy /Y "dictionary\*"  "E:\dictionary\"
+xcopy /Y "songs\*"      "E:\esp32_library\songs\"
+xcopy /Y "dictionary\*" "E:\esp32_library\dictionary\"
 ```
 
 > If a dict.cc export is still a `.zip`, extract it first (Windows has tar built in):
@@ -225,14 +227,15 @@ landscape file on the card; the firmware auto-selects whichever matches the curr
 (each file records its size in an 8-byte header):
 
 ```cmd
-:: portrait  → /splash.raw       (covers 0° and 180°; auto-flips for 180°)
+:: portrait  → splash.raw       (covers 0° and 180°; auto-flips for 180°)
 python make_splash.py esp32c5.png --board pancake
-:: landscape → /splash_land.raw  (covers 90° and 270°)
+:: landscape → splash_land.raw  (covers 90° and 270°)
 python make_splash.py esp32c5.png --board pancake --landscape --out splash_land.raw
 ```
 
-Copy them to the **SD card root** as `\splash.raw` and `\splash_land.raw`. Either/both may be
-present; if neither matches the current orientation, boot just skips the splash.
+Copy them into the library folder as `\esp32_library\splash.raw` and
+`\esp32_library\splash_land.raw`. Either/both may be present; if neither matches the current
+orientation, boot just skips the splash.
 
 The default output is little-endian RGB565, which matches the firmware's `setSwapBytes(true)`
 draw path (the same path `fillRect`/text use), so on the Pancake the splash colours match the
@@ -244,11 +247,12 @@ rest of the UI with no extra flags. If colours still look wrong, try one flag at
 
 ```
 SD root\
-  splash.raw                                   (optional portrait splash)
-  splash_land.raw                              (optional landscape splash)
-  bible\        asv.xml, web.xml, …            (Bible mode)
-  songs\        *.xml + *.toc                  (from generate_songs_xml.py)
-  dictionary\   *.xml + *.toc + *.pgx          (from generate_dict_xml.py)
+  esp32_library\
+    splash.raw                                 (optional portrait splash)
+    splash_land.raw                            (optional landscape splash)
+    bible\        asv.xml, web.xml, …          (Bible mode)
+    songs\        *.xml + *.toc                (from generate_songs_xml.py)
+    dictionary\   *.xml + *.toc + *.pgx        (from generate_dict_xml.py)
 ```
 
 Each mode keeps its own `bookmarks.txt` and `srch_hist.txt` inside its own folder, and its own

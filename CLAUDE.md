@@ -34,7 +34,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 The custom partition scheme is **required** — it creates the `ota_0`/`ota_1` dual-boot layout. The Bible firmware flashes to `ota_0` (offset `0x20000`); Marauder goes to `ota_1` (`0x390000`).
 
 ### SD card setup
-Copy OSIS XML Bible files to `/bible/` on a FAT32 SD card. No pre-processing needed — the firmware streams XML directly.
+Copy OSIS XML Bible files to `/esp32_library/bible/` on a FAT32 SD card. All firmware data lives under `/esp32_library/` (`SD_LIB_ROOT` in `BibleInterface.h`): `bible/`, `songs/`, `dictionary/`, and `splash.raw`/`splash_land.raw`. No pre-processing needed — the firmware streams XML directly.
 
 ---
 
@@ -91,7 +91,7 @@ lineH: font1=12, font2=18, font4=30     chapter tile: w=scrW/5, h=36
 
 ### Persistent storage
 - **NVS** (`Preferences`): `font`, `dark`, `bright`, `trans`, `accent` — all saved immediately on change.
-- **SD files**: `/bible/bookmarks.txt` (format: `book chapter verse_first verse_last label\n`), `/bible/srch_hist.txt` (one query per line, max 10).
+- **SD files**: `/esp32_library/bible/bookmarks.txt` (format: `book chapter verse_first verse_last label\n`), `/esp32_library/bible/srch_hist.txt` (one query per line, max 10).
 - Bookmark file is backward-compatible: old format (`book chapter label`) is detected by checking whether tokens 3 and 4 are pure integers.
 
 ### Verse selection & bookmarks

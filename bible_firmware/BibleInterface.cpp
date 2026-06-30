@@ -2261,10 +2261,11 @@ bool BibleInterface::drawSplashImage() {
     const int16_t MAXW = 320;
 #endif
     // Try both splash files and use whichever one's embedded size matches the
-    // current orientation — so a portrait /splash.raw and a landscape
-    // /splash_land.raw can both live on the card and the right one is auto-picked.
-    // 8-byte header: "SPL1" + uint16 width + uint16 height (little-endian).
-    static const char* const PATHS[2] = { "/splash.raw", "/splash_land.raw" };
+    // current orientation — so a portrait splash.raw and a landscape
+    // splash_land.raw can both live in the library folder and the right one is
+    // auto-picked. 8-byte header: "SPL1" + uint16 width + uint16 height (LE).
+    static const char* const PATHS[2] = { SD_LIB_ROOT "/splash.raw",
+                                          SD_LIB_ROOT "/splash_land.raw" };
     for (uint8_t i = 0; i < 2; i++) {
         File f = SD.open(PATHS[i]);
         if (!f) continue;

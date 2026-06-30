@@ -23,15 +23,16 @@ Runs as a **separate firmware** in the `ota_0` partition alongside Marauder in `
 
 The firmware reads OSIS XML Bible files **directly** — no pre-processing required.
 
-Create a `/bible/` folder on the root of your SD card and copy XML files into it:
+Create an `/esp32_library/bible/` folder on your SD card and copy XML files into it:
 
 ```
 SD card root
-└── bible/
-    ├── asv.xml          ← American Standard Version
-    ├── web.xml          ← World English Bible
-    ├── luth1912ap.xml   ← Luther 1912 (German, includes Apocrypha)
-    └── bookmarks.txt    ← auto-created by the firmware
+└── esp32_library/
+    └── bible/
+        ├── asv.xml          ← American Standard Version
+        ├── web.xml          ← World English Bible
+        ├── luth1912ap.xml   ← Luther 1912 (German, includes Apocrypha)
+        └── bookmarks.txt    ← auto-created by the firmware
 ```
 
 Available OSIS XML source files:
@@ -212,8 +213,8 @@ The Translation screen is skipped if only one `.xml` file is on the SD card.
 ## Troubleshooting
 
 **"No Bible found on SD!"**
-- Verify `/bible/` exists at the SD card root.
-- Verify at least one `.xml` file is inside `/bible/`.
+- Verify `/esp32_library/bible/` exists on the SD card.
+- Verify at least one `.xml` file is inside `/esp32_library/bible/`.
 - Check SD card is FAT32 formatted.
 
 **Verses missing / blank chapters**

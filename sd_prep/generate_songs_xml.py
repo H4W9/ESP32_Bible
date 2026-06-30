@@ -29,7 +29,7 @@ Output (default ./songs_out/):
       S|<category display name>
       B|<code>|<song title>|<chapterCount=1>|<sectionIndex>|<byteOffset>
 
-Copy the *contents* of ./songs_out/ into  /songs/  on the SD card.
+Copy the *contents* of ./songs_out/ into  /esp32_library/songs/  on the SD card.
 
 Run:
   pip install openpyxl
@@ -317,7 +317,7 @@ def generate(data_path, books_path, cats_path, out_dir, make_zip):
 
     print(f"\nDone.  {grand_verses:,} stanzas in {len(songs_by_book)} songbooks.")
     print(f"Output : ./{out_dir}/")
-    print(f"Copy the .xml + .toc files into  /songs/  on the SD card.")
+    print(f"Copy the .xml + .toc files into  /esp32_library/songs/  on the SD card.")
 
 
 def main():
