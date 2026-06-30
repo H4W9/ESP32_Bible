@@ -215,15 +215,19 @@ python make_splash.py esp32c5.png --board v8
 python make_splash.py esp32c5.png --board pancake --cx 0.62 --cy 0.48
 ```
 
-Copy the result to the **SD card root** as `\splash.raw`. If it's absent, boot just skips the
-splash.
+The splash is shown at the **active screen orientation**. You can keep **both** a portrait and a
+landscape file on the card; the firmware auto-selects whichever matches the current rotation
+(each file records its size in an 8-byte header):
 
-The splash is shown at the **active screen orientation**. A portrait file covers 0° and 180°
-(it auto-flips for 180°); for a landscape orientation (90°/270°) make a landscape file:
 ```cmd
-python make_splash.py esp32c5.png --board pancake --landscape
+:: portrait  → /splash.raw       (covers 0° and 180°; auto-flips for 180°)
+python make_splash.py esp32c5.png --board pancake
+:: landscape → /splash_land.raw  (covers 90° and 270°)
+python make_splash.py esp32c5.png --board pancake --landscape --out splash_land.raw
 ```
-If the file size doesn't match the current orientation, the splash is simply skipped.
+
+Copy them to the **SD card root** as `\splash.raw` and `\splash_land.raw`. Either/both may be
+present; if neither matches the current orientation, boot just skips the splash.
 
 Colour-correction flags (the splash should match the rest of the UI's colours): `--bgr`
 (red/blue swap), `--invert` (photo negative), `--swap` (byte order). Combine as needed.
@@ -232,7 +236,8 @@ Colour-correction flags (the splash should match the rest of the UI's colours): 
 
 ```
 SD root\
-  splash.raw                                   (optional, from make_splash.py)
+  splash.raw                                   (optional portrait splash)
+  splash_land.raw                              (optional landscape splash)
   bible\        asv.xml, web.xml, …            (Bible mode)
   songs\        *.xml + *.toc                  (from generate_songs_xml.py)
   dictionary\   *.xml + *.toc + *.pgx          (from generate_dict_xml.py)

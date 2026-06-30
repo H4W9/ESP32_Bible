@@ -88,6 +88,9 @@ def main():
 
     fmt = "<H" if args.swap else ">H"     # firmware default expects big-endian
     with open(args.out, "wb") as f:
+        # 8-byte header: "SPL1" + width + height (LE) so the firmware knows the
+        # stride and can reject a file made for a different orientation/board.
+        f.write(b"SPL1" + struct.pack("<HH", W, H))
         for y in range(H):
             for x in range(W):
                 r, g, b = img.getpixel((x, y))

@@ -2112,24 +2112,35 @@ void BibleInterface::goToChapter(uint16_t book) {
 // active rotation (portrait file works for 0°/180°; make a landscape file for 90°/270°
 // with make_splash.py --landscape). Returns false if absent or size mismatched.
 bool BibleInterface::drawSplashImage() {
-    File f = SD.open("/splash.raw");
-    if (!f) return false;
 #ifdef MARAUDER_PANCAKE
     const int16_t MAXW = 480;
 #else
     const int16_t MAXW = 320;
 #endif
-    int16_t sw = (int16_t)scrW(), sh = (int16_t)scrH();
-    if (sw > MAXW || (uint32_t)f.size() != (uint32_t)sw * sh * 2) { f.close(); return false; }
-    tft.setSwapBytes(true);
-    uint16_t row[MAXW];
-    for (int16_t y = 0; y < sh; y++) {
-        if (f.read((uint8_t*)row, sw * 2) != (int)(sw * 2)) break;
-        tft.pushImage(0, y, sw, 1, row);
+    // Try both splash files and use whichever one's embedded size matches the
+    // current orientation — so a portrait /splash.raw and a landscape
+    // /splash_land.raw can both live on the card and the right one is auto-picked.
+    // 8-byte header: "SPL1" + uint16 width + uint16 height (little-endian).
+    static const char* const PATHS[2] = { "/splash.raw", "/splash_land.raw" };
+    for (uint8_t i = 0; i < 2; i++) {
+        File f = SD.open(PATHS[i]);
+        if (!f) continue;
+        uint8_t hdr[8];
+        if (f.read(hdr, 8) != 8 || memcmp(hdr, "SPL1", 4) != 0) { f.close(); continue; }
+        int16_t fw = (int16_t)(hdr[4] | (hdr[5] << 8));
+        int16_t fh = (int16_t)(hdr[6] | (hdr[7] << 8));
+        if (fw != (int16_t)scrW() || fh != (int16_t)scrH() || fw > MAXW) { f.close(); continue; }
+        tft.setSwapBytes(true);
+        uint16_t row[MAXW];
+        for (int16_t y = 0; y < fh; y++) {
+            if (f.read((uint8_t*)row, fw * 2) != (int)(fw * 2)) break;
+            tft.pushImage(0, y, fw, 1, row);
+        }
+        tft.setSwapBytes(false);
+        f.close();
+        return true;
     }
-    tft.setSwapBytes(false);
-    f.close();
-    return true;
+    return false;
 }
 
 void BibleInterface::showSplashUntilTap() {
