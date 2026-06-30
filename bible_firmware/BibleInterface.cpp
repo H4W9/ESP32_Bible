@@ -1267,8 +1267,9 @@ void BibleInterface::drawTransValue(int16_t off) {
     const int16_t GAP = 24;
     // Clip to just this row's band (intersected with the content area) — NOT the
     // whole content height, or it paints a tall bar over the other rows' column.
+    // Stop 3 pixels short of the bottom so the row's divider line is preserved.
     int16_t top = trans_marq_winy;
-    int16_t bot = trans_marq_winy + (int16_t)itemH();
+    int16_t bot = trans_marq_winy + (int16_t)itemH() - 3;
     int16_t cy0 = (int16_t)contentY();
     int16_t cy1 = cy0 + (int16_t)contentH();
     if (top < cy0) top = cy0;
@@ -1277,6 +1278,9 @@ void BibleInterface::drawTransValue(int16_t off) {
     if (h <= 0) return;
     tft.setViewport(trans_marq_winx, top, trans_marq_winw, h, false);
     tft.fillRect(trans_marq_winx, top, trans_marq_winw, h, trans_marq_bg);
+    // tftCharUTF8 fills each glyph cell with the current text bg colour, so set it
+    // to the row background here or the text sits on a stale (button) colour.
+    tft.setTextColor(trans_marq_fg, trans_marq_bg);
     int16_t x0 = trans_marq_winx - off;
     int16_t tx = x0;
     for (const char* p = trans_marq_str; *p; p++)
