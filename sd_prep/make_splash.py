@@ -3,7 +3,7 @@
 make_splash.py
 =====================================================================
 Convert an image into the ESP32 firmware's boot-splash file: a raw
-RGB565 (big-endian) blob sized to the display's native portrait
+RGB565 (little-endian) blob sized to the display's native portrait
 resolution. Copy the output to the SD card root as  /splash.raw  — the
 firmware shows it for 2.5 s on boot (and again when you tap the main-menu
 header). If /splash.raw is absent, boot just skips the splash.
@@ -68,7 +68,7 @@ def main():
     # Colour-correction toggles (if the splash looks wrong on your panel):
     ap.add_argument("--bgr",    action="store_true", help="swap red/blue (BGR panel)")
     ap.add_argument("--invert", action="store_true", help="invert colours (photo negative)")
-    ap.add_argument("--swap",   action="store_true", help="little-endian byte order")
+    ap.add_argument("--swap",   action="store_true", help="big-endian byte order (default is little-endian)")
     ap.add_argument("--landscape", action="store_true",
                     help="size for a landscape orientation (swaps W/H)")
     args = ap.parse_args()
@@ -86,7 +86,12 @@ def main():
     img = crop_to_aspect(img, W, H, args.cx, args.cy)
     img = img.resize((W, H), Image.LANCZOS)
 
-    fmt = "<H" if args.swap else ">H"     # firmware default expects big-endian
+    # The firmware reads the file with tft.setSwapBytes(true), which sends each
+    # 16-bit value MSB-first (same path as fillRect). For that to be correct, the
+    # uint16 the ESP reads must equal the RGB565 value, i.e. the file must be
+    # LITTLE-endian on the little-endian C5.  So little-endian is the default;
+    # --swap falls back to big-endian only if a panel/lib variant needs it.
+    fmt = ">H" if args.swap else "<H"
     with open(args.out, "wb") as f:
         # 8-byte header: "SPL1" + width + height (LE) so the firmware knows the
         # stride and can reject a file made for a different orientation/board.

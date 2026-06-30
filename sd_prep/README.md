@@ -229,8 +229,11 @@ python make_splash.py esp32c5.png --board pancake --landscape --out splash_land.
 Copy them to the **SD card root** as `\splash.raw` and `\splash_land.raw`. Either/both may be
 present; if neither matches the current orientation, boot just skips the splash.
 
-Colour-correction flags (the splash should match the rest of the UI's colours): `--bgr`
-(red/blue swap), `--invert` (photo negative), `--swap` (byte order). Combine as needed.
+The default output is little-endian RGB565, which matches the firmware's `setSwapBytes(true)`
+draw path (the same path `fillRect`/text use), so on the Pancake the splash colours match the
+rest of the UI with no extra flags. If colours still look wrong, try one flag at a time:
+`--bgr` (red/blue swap, e.g. a BGR panel like V8), `--invert` (photo negative), `--swap`
+(fall back to big-endian byte order). Combine as needed.
 
 ## Final SD card layout
 
