@@ -62,8 +62,8 @@ def main():
     ap.add_argument("--board", choices=list(BOARD_SIZE), help="target board size")
     ap.add_argument("--w", type=int, help="explicit width (overrides --board)")
     ap.add_argument("--h", type=int, help="explicit height (overrides --board)")
-    ap.add_argument("--cx", type=float, default=0.62, help="crop centre X (0..1)")
-    ap.add_argument("--cy", type=float, default=0.48, help="crop centre Y (0..1)")
+    ap.add_argument("--cx", type=float, default=0.5, help="crop centre X (0..1)")
+    ap.add_argument("--cy", type=float, default=0.5, help="crop centre Y (0..1)")
     ap.add_argument("--out", default="splash.raw", help="output file (default splash.raw)")
     # Colour-correction toggles (if the splash looks wrong on your panel):
     ap.add_argument("--bgr",    action="store_true", help="swap red/blue (BGR panel)")
