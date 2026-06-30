@@ -2507,21 +2507,10 @@ void BibleInterface::drawMainMenu() {
     tft.fillScreen(bg());
     drawHeader("ESP-32 Library", false);
 
-    // Each button is shaded with that mode's own saved highlight (accent) colour,
-    // read from its NVS namespace. The dark/light variant matches the menu's theme
-    // so the accents contrast with the menu background.
-    static const char* const MODE_NS[3] = { "bible", "songs", "dict" };
-    uint16_t btn_col[3];
-    for (uint8_t i = 0; i < 3; i++) {
-        Preferences mp;
-        uint8_t ac = 0;
-        if (mp.begin(MODE_NS[i], true)) {       // read-only
-            ac = mp.getUChar("accent", 0);
-            mp.end();
-        }
-        if (ac >= ACCENT_COUNT) ac = 0;
-        btn_col[i] = dark_mode ? ACCENT_DARK[ac] : ACCENT_LIGHT[ac];
-    }
+    // All buttons use the menu theme's button background — the same colour the
+    // Settings button and every header/nav button use — so the menu reads as one
+    // consistent themed surface (driven by the theme set for the Main Menu scope).
+    uint16_t btn_bg = hdr_bg();
 
     const int16_t margin = 16;
     const int16_t gap    = 14;
@@ -2531,9 +2520,9 @@ void BibleInterface::drawMainMenu() {
     int16_t bh    = (avail - sh - gap * 3) / 3;
     for (uint8_t i = 0; i < 3; i++) {
         int16_t y = top + i * (bh + gap);
-        tft.fillRoundRect(margin, y, scrW() - 2 * margin, bh, 12, btn_col[i]);
+        tft.fillRoundRect(margin, y, scrW() - 2 * margin, bh, 12, btn_bg);
         tft.drawRoundRect(margin, y, scrW() - 2 * margin, bh, 12, edgeColor(i * 3, dim_fg()));
-        tft.setTextColor(chromeFg(), btn_col[i]);
+        tft.setTextColor(chromeFg(), btn_bg);
         tft.drawCentreString(MENU_LABELS[i], scrW() / 2, y + (bh - 26) / 2, 4);
     }
     // Smaller Settings button under Dictionary.
