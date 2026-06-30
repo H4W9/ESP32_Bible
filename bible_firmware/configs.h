@@ -14,6 +14,17 @@
 // #define DEVELOPER
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Firmware identity — shown on the Settings → About screen.
+// Bump BIBLE_FW_VERSION whenever you cut a new release.
+// ─────────────────────────────────────────────────────────────────────────────
+#define BIBLE_FW_NAME    "ESP-32 Library"
+#define BIBLE_FW_VERSION "1.0.0"
+#define BIBLE_FW_AUTHOR  "H4W9"
+// Short git commit the build was cut from. Arduino IDE can't inject this, so
+// update it by hand (or run sd_prep/stamp_commit.py) before a release build.
+#define BIBLE_FW_COMMIT  "07d2d58"
+
+// ─────────────────────────────────────────────────────────────────────────────
 // MARAUDER_V6_1
 //   Original ESP32, no PSRAM, default VSPI bus for SD (SD_CS only needed).
 // ─────────────────────────────────────────────────────────────────────────────
@@ -25,6 +36,11 @@
   #define USE_SD
   #define HAS_IDF_3           // skip explicit esp_spiram_init(); no PSRAM on V6.1
   #define HAS_BATTERY         // MAX17048 fuel gauge on I2C (SDA=33, SCL=22)
+
+  #define BOARD_NAME    "Marauder V6.1"
+  #define BOARD_MCU     "ESP32"
+  #define BOARD_DISPLAY "ILI9341 240x320"
+  #define BOARD_TOUCH   "XPT2046 resistive"
 
   #define TFT_WIDTH  240
   #define TFT_HEIGHT 320
@@ -51,6 +67,11 @@
   #define HAS_PSRAM
   #define HAS_IDF_3           // ESP32-C5 uses IDF 5.x; psramInit() handles PSRAM
   #define HAS_BATTERY         // MAX17048 fuel gauge on I2C bus
+
+  #define BOARD_NAME    "Marauder V8"
+  #define BOARD_MCU     "ESP32-C5"
+  #define BOARD_DISPLAY "ILI9341 240x320"
+  #define BOARD_TOUCH   "XPT2046 resistive"
 
   #define TFT_WIDTH  240
   #define TFT_HEIGHT 320
@@ -80,6 +101,11 @@
   #define HAS_C5_SD           // explicit SPIClass init required before SD.begin()
   #define HAS_PSRAM
   #define HAS_IDF_3           // ESP32-C5 uses IDF 5.x; psramInit() handles PSRAM
+
+  #define BOARD_NAME    "Pancake C5"
+  #define BOARD_MCU     "ESP32-C5"
+  #define BOARD_DISPLAY "ST7796 320x480"
+  #define BOARD_TOUCH   "FT6336 capacitive"
 
   #define TFT_WIDTH  320
   #define TFT_HEIGHT 480

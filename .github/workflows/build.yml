@@ -115,6 +115,16 @@ jobs:
           cp "bible_firmware/$PARTITIONS" bible_firmware/partitions.csv
           echo "partitions.csv → $PARTITIONS"
 
+      # ── 4b. Stamp the commit SHA into the About screen ─────────────────────
+      # Arduino IDE can't inject git data, so do it here. Uses the PR head sha on
+      # pull_request events (not the synthetic merge commit), else the pushed sha.
+      - name: Stamp commit SHA
+        env:
+          GIT_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          python3 sd_prep/stamp_commit.py
+          grep BIBLE_FW_COMMIT bible_firmware/configs.h
+
       # ── 5. Compile ─────────────────────────────────────────────────────────
       - name: Compile ${{ matrix.board }}
         run: |

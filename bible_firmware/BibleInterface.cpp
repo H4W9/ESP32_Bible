@@ -314,6 +314,7 @@ BibleInterface::BibleInterface()
       drag_origin_px(0.f), vbuf_i(0),
       trans_marq_on(false), trans_marq_winx(0), trans_marq_winy(0), trans_marq_winw(0), trans_marq_texty(0),
       trans_marq_textw(0), trans_marq_off(0), trans_marq_bg(0), trans_marq_fg(0), trans_marq_ms(0),
+      about_mcu_y0(0), about_mcu_y1(0),
       book_offsets(nullptr), book_offsets_cap(0),
       book_idx_valid(false), book_idx_trans(0xFF),
       line_spr(&tft)
@@ -408,6 +409,7 @@ void BibleInterface::main(uint32_t currentTime) {
             case BV_BOOKMARKS:       drawBookmarks();      break;
             case BV_SEARCH_INPUT:    drawSearchInput();    break;
             case BV_SEARCH_RESULTS:  drawSearchResults();  break;
+            case BV_ABOUT:           drawAbout();          break;
         }
         needs_redraw = false;
     }
@@ -426,6 +428,7 @@ void BibleInterface::main(uint32_t currentTime) {
         case BV_BOOKMARKS:       handleBookmarksInput();                break;
         case BV_SEARCH_INPUT:    handleSearchInputInput();              break;
         case BV_SEARCH_RESULTS:  handleSearchResultsInput();            break;
+        case BV_ABOUT:           handleAboutInput();                    break;
     }
 
     if (view == BV_SETTINGS) tickTransMarquee();   // slow-scroll a long Translation value
@@ -533,7 +536,8 @@ void BibleInterface::drawHeader(const char* title, bool show_back) {
     // button (left) and the search/battery area (right).
     {
         int16_t left   = show_back ? 46 : 4;
-        bool    full_w = (view == BV_MAIN_MENU) || (view == BV_SETTINGS && settings_from_menu);
+        bool    full_w = (view == BV_MAIN_MENU) || (view == BV_ABOUT) ||
+                         (view == BV_SETTINGS && settings_from_menu);
         int16_t right  = full_w ? (int16_t)scrW() - 4 : (int16_t)scrW() - 66;
         int16_t tw     = textWidthUTF8(title, 2);
         int16_t tx0    = (int16_t)(scrW() / 2) - tw / 2;
@@ -546,7 +550,8 @@ void BibleInterface::drawHeader(const char* title, bool show_back) {
     // Search button — same bordered-box style as the back button.
     // Hidden on the main menu and on menu-opened Settings (no content to search).
     // Positioned to the left of the battery % text.
-    bool hide_search = (view == BV_MAIN_MENU) || (view == BV_SETTINGS && settings_from_menu);
+    bool hide_search = (view == BV_MAIN_MENU) || (view == BV_ABOUT) ||
+                       (view == BV_SETTINGS && settings_from_menu);
     if (!hide_search) {
         int16_t sb_x = (int16_t)scrW() - 63;
         tft.fillRoundRect(sb_x,     3, 28, 22, 4, hdr_bg());
@@ -989,7 +994,7 @@ void BibleInterface::drawReading() {
 // Settings row indices (kept in sync with handleSettingsInput):
 //   0 Font Size · 1 Font Color · 2 Verse # Color · 3 Theme · 4 Brightness
 //   5 Song Book/Translation/Dictionary · 6 Highlight · 7 Orientation
-//   8 Boot OTA_1 · 9 Calibrate Touch (resistive only)
+//   8 About · 9 Boot OTA_1 · 10 Calibrate Touch (resistive only)
 static const char* const SCOPE_NAMES[5] = { "Global", "Main Menu", "Bible", "Songs", "Dictionary" };
 
 // Representative NVS namespace used to READ a scope's settings.
@@ -1021,7 +1026,8 @@ void BibleInterface::buildSettingsRows() {
     set_rows[k++] = SR_THEME;
     set_rows[k++] = SR_HIGHLIGHT;
     set_rows[k++] = SR_ORIENT;
-    set_rows[k++] = SR_BRIGHT;                                    // just above Boot
+    set_rows[k++] = SR_BRIGHT;
+    set_rows[k++] = SR_ABOUT;                                    // just above Boot
     set_rows[k++] = SR_BOOT;
 #ifndef HAS_CAP_TOUCH
     set_rows[k++] = SR_CALIB;
@@ -1245,6 +1251,7 @@ void BibleInterface::redrawSettingsContent() {
             case SR_HIGHLIGHT: choiceRow(row_y, "Highlight", accent_def ? "Default" : ACCENT_NAMES[accent_idx], sel, 0); break;
             case SR_ORIENT:    choiceRow(row_y, "Orientation",   ORIENT_NAMES[orientation & 3],    sel, 0);              break;
             case SR_BRIGHT:    brightRow(row_y, sel); break;
+            case SR_ABOUT:     drawListRow(row_y, "About",           sel, false); break;
             case SR_BOOT:      drawListRow(row_y, "Boot OTA_1",      sel, false); break;
             case SR_CALIB:     drawListRow(row_y, "Calibrate Touch", sel, false); break;
         }
@@ -1984,6 +1991,9 @@ void BibleInterface::handleSettingsInput() {
                 else     { if (bl_idx > 0)  blSet(bl_idx - 1); }
                 redrawSettingsContent();
                 break;
+            case SR_ABOUT:
+                goToAbout();
+                return;
             case SR_BOOT:
                 bootMarauder();
                 return;
@@ -2310,6 +2320,84 @@ void BibleInterface::goToBookmarks() {
     bm_sel = 0; bm_scroll = 0;
     scroll_px = 0.f;
     needs_redraw = true;
+}
+void BibleInterface::goToAbout() {
+    stopFling();
+    view = BV_ABOUT;
+    needs_redraw = true;
+}
+
+// Firmware / hardware information screen. Identity strings come from configs.h
+// (BIBLE_FW_* and per-board BOARD_*), so bumping the version is a one-line edit.
+void BibleInterface::drawAbout() {
+    tft.fillScreen(bg());
+    drawHeader("About");
+
+    int16_t cx = (int16_t)scrW() / 2;
+    int16_t y  = (int16_t)contentY() + 10;
+
+    // App name + version + author (centred, prominent).
+    tft.setTextColor(fg(), bg());
+    tft.drawCentreString(BIBLE_FW_NAME, cx, y, 4);
+    y += 34;
+    char vbuf[40];
+    snprintf(vbuf, sizeof(vbuf), "Version %s", BIBLE_FW_VERSION);
+    tft.setTextColor(fg(), bg());
+    tft.drawCentreString(vbuf, cx, y, 2);
+    y += 22;
+    tft.setTextColor(dim_fg(), bg());
+    tft.drawCentreString("by " BIBLE_FW_AUTHOR, cx, y, 2);
+    y += 26;
+
+    tft.drawFastHLine(16, y, (int16_t)scrW() - 32, dim_fg());
+    y += 10;
+
+    // Label : value detail rows.
+    auto row = [&](const char* label, const char* value) {
+        tft.setTextColor(dim_fg(), bg());
+        tft.drawString(label, 14, y, 2);
+        tft.setTextColor(fg(), bg());
+        tft.drawString(value, 92, y, 2);
+        y += 22;
+    };
+    row("Board",   BOARD_NAME);
+    about_mcu_y0 = y;                 // remember the MCU row band for the splash easter egg
+    row("MCU",     BOARD_MCU);
+    about_mcu_y1 = y;
+    row("Display", BOARD_DISPLAY);
+    row("Touch",   BOARD_TOUCH);
+#ifdef HAS_PSRAM
+    row("PSRAM",   "Yes");
+#else
+    row("PSRAM",   "None");
+#endif
+    row("Built",   __DATE__);
+    row("Commit",  BIBLE_FW_COMMIT);
+
+    drawNavBar("Back", "", "");
+}
+
+void BibleInterface::handleAboutInput() {
+    uint16_t tx, ty;
+    bool down = pollTouch(&tx, &ty);
+    if (down && !touch_was_down) {
+        touch_was_down = true;
+        touch_down_x = tx; touch_down_y = ty;
+        return;
+    }
+    if (!down && touch_was_down) {
+        touch_was_down = false;
+        // Easter egg: tapping the MCU row shows the boot splash until tapped.
+        if ((int16_t)touch_down_y >= about_mcu_y0 && (int16_t)touch_down_y < about_mcu_y1) {
+            showSplashUntilTap();
+            return;
+        }
+        // Header back arrow or the "Back" nav button returns to Settings.
+        bool hdr_back = ((int16_t)touch_down_y < (int16_t)hdrH() && touch_down_x < 48);
+        bool nav_back = (touchInNav(touch_down_x, touch_down_y) &&
+                         touch_down_x < (int16_t)scrW() / 3);
+        if (hdr_back || nav_back) { view = BV_SETTINGS; needs_redraw = true; }
+    }
 }
 // ─────────────────────────────────────────────────────────────────────────────
 // Mode-parameterized SD paths and NVS namespace

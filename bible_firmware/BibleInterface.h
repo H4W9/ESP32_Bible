@@ -117,6 +117,7 @@ enum BibleView {
     BV_BOOKMARKS,       // saved bookmarks list
     BV_SEARCH_INPUT,    // search history list + "New" keyboard entry
     BV_SEARCH_RESULTS,  // scrollable list of matching verse references
+    BV_ABOUT,           // firmware/hardware info screen (from Settings)
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -286,6 +287,9 @@ private:
     uint32_t  trans_marq_ms;    // timestamp of last marquee advance
     char      trans_marq_str[64];
 
+    // ── About screen: tap band of the MCU row (hidden splash easter egg) ──────
+    int16_t   about_mcu_y0, about_mcu_y1;
+
     // ── Book byte-offset index (fast chapter loads) ───────────────────────
     // Dynamically allocated, sized to numBooks() for the active mode. For Bible
     // it is filled from the .idx file; for Songs/Dict it is filled by loadToc().
@@ -329,7 +333,7 @@ private:
     // Settings rows are dynamic (depend on Settings Scope + board), addressed by kind.
     enum SettingRow : uint8_t {
         SR_SCOPE, SR_TRANS, SR_FONTSIZE, SR_FONTCOL, SR_VNUMCOL,
-        SR_THEME, SR_HIGHLIGHT, SR_ORIENT, SR_BRIGHT, SR_BOOT, SR_CALIB
+        SR_THEME, SR_HIGHLIGHT, SR_ORIENT, SR_BRIGHT, SR_ABOUT, SR_BOOT, SR_CALIB
     };
     void     buildSettingsRows();        // fill set_rows[] for the current scope/board
     uint8_t  settingsScopeMode() const;  // MODE_* for a content-mode scope, else 0xFF
@@ -341,6 +345,7 @@ private:
     void runTouchCalibration();   // show TFT_eSPI calibration wizard, save result to Prefs
 #endif
     void drawBookmarks();
+    void drawAbout();           // firmware/hardware info screen
     void drawConfirmDelete();   // overlay popup drawn on top of bookmark list
     void drawSearchInput();
     void drawSearchDelConfirm(); // overlay popup drawn on top of search history
@@ -434,6 +439,7 @@ private:
     void handleReadingInput();
     void handleSettingsInput();
     void handleBookmarksInput();
+    void handleAboutInput();
     void handleSearchInputInput();
     void handleSearchResultsInput();
 
@@ -454,6 +460,7 @@ private:
     void goToReading(uint16_t chapter, int16_t start_line = 0);
     void goToSettings(bool from_menu = false);
     void goToBookmarks();
+    void goToAbout();
     void addBookmarkCurrent();
     void jumpToBookmark(uint8_t bm_idx);
     void goToSearchInput();
