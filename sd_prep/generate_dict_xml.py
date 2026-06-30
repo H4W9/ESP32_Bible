@@ -217,12 +217,16 @@ def parse_wiktionary(path, lang, max_senses=5):
 
 
 # ── Bucketed XML writer ──────────────────────────────────────────────────────
-def build_direction(entries, stem, label, out_dir, page):
+def build_direction(entries, stem, label, out_dir, page, disp_name=None):
     """
     entries: iterable of (word, definition).
     Streams into per-bucket temp files, then sorts each bucket and emits
     <stem>.xml + <stem>.toc.  Returns total entry count.
+    disp_name: name shown in the firmware menus (defaults to label minus the
+    trailing " Dictionary").
     """
+    if disp_name is None:
+        disp_name = label[:-len(" Dictionary")] if label.endswith(" Dictionary") else label
     tmp_dir = os.path.join(out_dir, "." + stem + ".tmp")
     os.makedirs(tmp_dir, exist_ok=True)
 
@@ -297,7 +301,11 @@ def build_direction(entries, stem, label, out_dir, page):
         w('</osis>\n')
 
     toc_path = os.path.join(out_dir, stem + ".toc")
+    toc_disp = disp_name.replace("|", " ").replace("\t", " ").strip()
     with open(toc_path, "w", encoding="utf-8", newline="\n") as tf:
+        # T| display name first so the firmware shows the proper dictionary name
+        # in its menus; older firmware ignores the line.
+        tf.write(f"T|{clip(toc_disp, DISPLAY_MAX)}\n")
         tf.write(f"S|{clip(label, DISPLAY_MAX)}\n")
         for code, disp, chapters, offset in book_entries:
             tf.write(f"B|{code}|{disp}|{chapters}|0|{offset}\n")

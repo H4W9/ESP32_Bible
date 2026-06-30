@@ -65,6 +65,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 #define BIBLE_MAX_TRANS          10     // max detected translations
 #define BIBLE_TRANS_LEN          32     // max chars in translation filename stem
+#define BIBLE_TRANS_DISP_LEN     48     // max chars in a translation's display name
 #define BIBLE_MAX_BM             50     // max stored bookmarks
 #define BIBLE_BM_LABEL_LEN       48     // max chars in bookmark label (fits song titles)
 #define BIBLE_VERSE_BUF         512     // max chars per verse (with null)
@@ -205,6 +206,7 @@ private:
     uint8_t   set_rows[16];        // dynamic list of SettingRow kinds currently shown
     uint8_t   set_row_n;
     char      sc_trans[BIBLE_MAX_TRANS][BIBLE_TRANS_LEN]; // scope's translation stems
+    char      sc_trans_names[BIBLE_MAX_TRANS][BIBLE_TRANS_DISP_LEN]; // display names (umlaut codes)
     uint8_t   sc_trans_count;
     uint8_t   sc_trans_cur;
 
@@ -228,6 +230,7 @@ private:
 
     // ── Translations ──────────────────────────────────────────────────────
     char      trans_stems[BIBLE_MAX_TRANS][BIBLE_TRANS_LEN]; // e.g. "asv", "web"
+    char      trans_names[BIBLE_MAX_TRANS][BIBLE_TRANS_DISP_LEN]; // display names (umlaut codes)
     uint8_t   trans_count;
 
     // ── Bookmarks ─────────────────────────────────────────────────────────
@@ -521,6 +524,10 @@ private:
     void    saveBookmarks();
     void    loadBookmarks();
     void    scanTranslations();
+    // Display name for a translation/songbook stem: reads the "T|<name>" line from
+    // <base>/<stem>.toc (UTF-8 → private umlaut codes); falls back to a prettified
+    // stem when there is no .toc or no T| line (e.g. Bible).
+    void    transDisplayName(const char* base, const char* stem, char* out, size_t n);
 
     // ── Brightness ────────────────────────────────────────────────────────
     void    blInit();

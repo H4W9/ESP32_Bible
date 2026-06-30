@@ -6,8 +6,9 @@ These two scripts build the **OSIS-style XML files** the ESP32 firmware reads in
 Each script produces, per "translation":
 
 - `<name>.xml` — verses: `<verse osisID="Code.Chapter.Verse">text</verse>`
-- `<name>.toc` — a small structure index the firmware loads: sections, books, chapter counts,
-  and the **byte offset** of each book so chapter loads are instant (no on-device scan).
+- `<name>.toc` — a small structure index the firmware loads: an optional `T|` display name
+  (shown in the menus, may contain umlauts), then sections, books, chapter counts, and the
+  **byte offset** of each book so chapter loads are instant (no on-device scan).
 - `<name>.pgx` — **Dictionary only**: a page index (`firstword - lastword` per 100-word page)
   so a letter opens as a readable page list instead of a number grid.
 

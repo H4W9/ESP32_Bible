@@ -697,7 +697,7 @@ void BibleInterface::redrawListContent(uint16_t item_count) {
 
         switch (view) {
             case BV_TRANS_SELECT:
-                drawListRow(y, prettyName(trans_stems[idx]),
+                drawListRow(y, trans_names[idx],
                             idx == (int16_t)menu_sel);
                 break;
             case BV_SECTION_SELECT:
@@ -793,7 +793,7 @@ void BibleInterface::drawTransSelect() {
     uint8_t vis = visItems();
     for (uint8_t i = 0; i < vis && (menu_scroll + i) < trans_count; i++) {
         bool sel = (menu_scroll + i) == (int16_t)menu_sel;
-        drawListRow(contentY() + i * itemH(), prettyName(trans_stems[menu_scroll + i]), sel);
+        drawListRow(contentY() + i * itemH(), trans_names[menu_scroll + i], sel);
     }
     drawScrollBar(trans_count, vis, menu_scroll);
     drawNavBar("Marks", "Settings", "Bright");
@@ -804,7 +804,7 @@ void BibleInterface::drawTransSelect() {
 // ─────────────────────────────────────────────────────────────────────────────
 void BibleInterface::drawSectionSelect() {
     tft.fillScreen(bg());
-    drawHeader(trans_count > 0 ? prettyName(trans_stems[cur_trans]) : "Bible", true);
+    drawHeader(trans_count > 0 ? trans_names[cur_trans] : "Bible", true);
     // Scroll-aware: Songs can have many categories (sections), so honor menu_scroll
     // and draw a scrollbar (Bible's 4 sections always fit).
     uint8_t vis = visItems();
@@ -1124,6 +1124,8 @@ void BibleInterface::scopeScanTrans() {
                 strncpy(sc_trans[i], sc_trans[j], BIBLE_TRANS_LEN);
                 strncpy(sc_trans[j], t, BIBLE_TRANS_LEN);
             }
+    for (uint8_t i = 0; i < sc_trans_count; i++)
+        transDisplayName(base, sc_trans[i], sc_trans_names[i], BIBLE_TRANS_DISP_LEN);
     Preferences p; uint8_t cur = 0;
     if (p.begin(scopeReadNs(settings_scope), true)) { cur = p.getUChar("trans", 0); p.end(); }
     sc_trans_cur = (cur < sc_trans_count) ? cur : 0;
@@ -1260,7 +1262,7 @@ void BibleInterface::redrawSettingsContent() {
                 uint8_t sm = settingsScopeMode();
                 const char* tl = (sm == MODE_SONGS) ? "Song Book"
                                : (sm == MODE_DICT)  ? "Dictionary" : "Translation";
-                transRow(row_y, tl, sc_trans_count > 0 ? prettyName(sc_trans[sc_trans_cur]) : "-", sel);
+                transRow(row_y, tl, sc_trans_count > 0 ? sc_trans_names[sc_trans_cur] : "-", sel);
                 break;
             }
             case SR_FONTSIZE: {
@@ -3857,6 +3859,41 @@ void BibleInterface::loadBookmarks() {
     f.close();
 }
 
+void BibleInterface::transDisplayName(const char* base, const char* stem, char* out, size_t n) {
+    if (n == 0) return;
+    out[0] = 0;
+    char path[80];
+    snprintf(path, sizeof(path), "%s/%s.toc", base, stem);
+    File f = SD.open(path);
+    if (f && !f.isDirectory()) {
+        char hdr[160];                       // the T| line is written first in the .toc
+        int len = (int)f.read((uint8_t*)hdr, sizeof(hdr) - 1);
+        f.close();
+        if (len > 0) {
+            hdr[len] = 0;
+            for (char* ln = hdr; *ln; ) {
+                char* nl = strchr(ln, '\n');
+                if (nl) *nl = 0;
+                size_t l = strlen(ln);
+                while (l && (ln[l - 1] == '\r' || ln[l - 1] == ' ')) ln[--l] = 0;
+                if (ln[0] == 'T' && ln[1] == '|') {
+                    strncpy(out, ln + 2, n - 1);
+                    out[n - 1] = 0;
+                    utf8Encode(out);          // UTF-8 umlauts → private codes for rendering
+                    return;
+                }
+                if (!nl) break;
+                ln = nl + 1;
+            }
+        }
+    } else if (f) {
+        f.close();
+    }
+    // No .toc / no T| line (e.g. Bible): prettify the stem (ASCII, utf8Encode no-op).
+    strncpy(out, prettyName(stem), n - 1);
+    out[n - 1] = 0;
+}
+
 void BibleInterface::scanTranslations() {
     trans_count = 0;
     File root = SD.open(basePath());
@@ -3902,6 +3939,9 @@ void BibleInterface::scanTranslations() {
                 strncpy(trans_stems[i], trans_stems[j], BIBLE_TRANS_LEN);
                 strncpy(trans_stems[j], tmp, BIBLE_TRANS_LEN);
             }
+    // Cache each translation's display name (umlauts) for the menus.
+    for (uint8_t i = 0; i < trans_count; i++)
+        transDisplayName(basePath(), trans_stems[i], trans_names[i], BIBLE_TRANS_DISP_LEN);
     if (cur_trans >= trans_count) cur_trans = 0;
 }
 

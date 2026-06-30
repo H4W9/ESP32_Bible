@@ -292,9 +292,13 @@ def generate(data_path, books_path, cats_path, out_dir, make_zip):
 
             w('</osis>\n')
 
-        # Write the .toc:  all S| lines first, then all B| lines (with offsets)
+        # Write the .toc:  T| display name first, then all S| lines, then all B|
+        # lines (with offsets). The firmware reads T| to show the proper songbook
+        # name (with umlauts) in its menus; older firmware just ignores the line.
         toc_path = os.path.join(out_dir, stem + ".toc")
+        disp_name = toc_safe(clip(sanitize_text(book_title), DISPLAY_MAX))
         with open(toc_path, "w", encoding="utf-8", newline="\n") as tf:
+            tf.write(f"T|{disp_name}\n")
             for line in toc_lines:
                 tf.write(line + "\n")
             for code, disp, sec_idx, offset in book_entries:
