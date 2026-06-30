@@ -3406,13 +3406,29 @@ bool BibleInterface::cacheChapter(uint16_t book, uint16_t chapter) {
     // ── Book byte-offset index ─────────────────────────────────────────────
     // Bible: load (or build+save) the .idx so we can seek directly to a book.
     // Songs/Dict: book_offsets[] is already filled by loadToc() (no .idx scan).
-    if (mode == MODE_BIBLE && (!book_idx_valid || book_idx_trans != cur_trans)) {
-        if (!loadBookIndex(trans_stems[cur_trans])) {
-            buildBookIndex(trans_stems[cur_trans]);
-            saveBookIndex(trans_stems[cur_trans]);
+    if (mode == MODE_BIBLE) {
+        // Defensive: guarantee the offset buffer exists and is large enough before
+        // any index load/build/seek. A prior Songs/Dict session can free or resize
+        // it, and the original alloc in selectTranslation can fail under memory
+        // pressure — either left book_offsets NULL/undersized, and loadBookIndex/
+        // buildBookIndex/seek then wrote through it and crashed intermittently.
+        if (!book_offsets || book_offsets_cap < BIBLE_BOOK_COUNT) {
+            if (book_offsets) free(book_offsets);
+            book_offsets     = (uint32_t*)RT_MALLOC(sizeof(uint32_t) * BIBLE_BOOK_COUNT);
+            book_offsets_cap = book_offsets ? BIBLE_BOOK_COUNT : 0;
+            if (book_offsets) memset(book_offsets, 0, sizeof(uint32_t) * BIBLE_BOOK_COUNT);
+            book_idx_valid = false;   // must (re)load into the fresh buffer
         }
-        book_idx_valid = true;
-        book_idx_trans = cur_trans;
+        if (!book_offsets) return false;   // out of memory — fail, don't crash
+
+        if (!book_idx_valid || book_idx_trans != cur_trans) {
+            if (!loadBookIndex(trans_stems[cur_trans])) {
+                buildBookIndex(trans_stems[cur_trans]);
+                saveBookIndex(trans_stems[cur_trans]);
+            }
+            book_idx_valid = true;
+            book_idx_trans = cur_trans;
+        }
     }
 
     // Build file path: /bible/<stem>.xml
@@ -3425,8 +3441,9 @@ bool BibleInterface::cacheChapter(uint16_t book, uint16_t chapter) {
         return false;
     }
 
-    // Seek to the book's starting byte — skips all preceding books
-    if (book_offsets[book] > 0)
+    // Seek to the book's starting byte — skips all preceding books.
+    // (Bounds-checked: a missing/short index just means scan from offset 0.)
+    if (book_offsets && book < book_offsets_cap && book_offsets[book] > 0)
         f.seek(book_offsets[book]);
 
     // Build the osisID prefix we are looking for: "Book.Chapter."
@@ -3878,6 +3895,7 @@ void BibleInterface::scanTranslations() {
 // ─────────────────────────────────────────────────────────────────────────────
 
 bool BibleInterface::loadBookIndex(const char* stem) {
+    if (!book_offsets || book_offsets_cap < BIBLE_BOOK_COUNT) return false;
     char idx_path[64];
     snprintf(idx_path, sizeof(idx_path), "%s/%s.idx", basePath(), stem);
     File fi = SD.open(idx_path);
@@ -3911,6 +3929,7 @@ bool BibleInterface::loadBookIndex(const char* stem) {
 // Scan the XML file and record the byte offset of the first <verse> tag for
 // each book.  Displays a "Building index..." screen while working.
 bool BibleInterface::buildBookIndex(const char* stem) {
+    if (!book_offsets || book_offsets_cap < BIBLE_BOOK_COUNT) return false;
     char path[64];
     snprintf(path, sizeof(path), "%s/%s.xml", basePath(), stem);
     File f = SD.open(path);
