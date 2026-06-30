@@ -56,6 +56,41 @@ def crop_to_aspect(img, target_w, target_h, cx, cy):
     return img.crop((left, top, left + cw, top + ch))
 
 
+def fit_to_canvas(img, target_w, target_h, pad):
+    """Scale the whole image to fit inside target (no cropping), pad the rest."""
+    iw, ih = img.size
+    scale = min(target_w / iw, target_h / ih)
+    nw, nh = max(1, int(round(iw * scale))), max(1, int(round(ih * scale)))
+    scaled = img.resize((nw, nh), Image.LANCZOS)
+    canvas = Image.new("RGB", (target_w, target_h), pad)
+    canvas.paste(scaled, ((target_w - nw) // 2, (target_h - nh) // 2))
+    return canvas
+
+
+def fill_height(img, target_w, target_h, cx):
+    """Scale so the image height == screen height (no vertical black), then
+    center-crop the horizontal overflow at fraction cx. No top/bottom bars."""
+    iw, ih = img.size
+    scale = target_h / ih
+    nw, nh = max(1, int(round(iw * scale))), target_h
+    scaled = img.resize((nw, nh), Image.LANCZOS)
+    if nw <= target_w:
+        # Image is narrower than the screen — pad sides (rare for a wide source).
+        canvas = Image.new("RGB", (target_w, target_h), (0, 0, 0))
+        canvas.paste(scaled, ((target_w - nw) // 2, 0))
+        return canvas
+    left = int(round(cx * nw)) - target_w // 2
+    left = max(0, min(nw - target_w, left))
+    return scaled.crop((left, 0, left + target_w, target_h))
+
+
+def parse_rgb(s):
+    parts = [int(p) for p in s.split(",")]
+    if len(parts) != 3 or any(p < 0 or p > 255 for p in parts):
+        raise argparse.ArgumentTypeError("--pad must be R,G,B with each 0..255")
+    return tuple(parts)
+
+
 def main():
     ap = argparse.ArgumentParser(description="Make /splash.raw for the ESP32 firmware.")
     ap.add_argument("input", help="source image (png/jpg/…)")
@@ -71,6 +106,12 @@ def main():
     ap.add_argument("--swap",   action="store_true", help="big-endian byte order (default is little-endian)")
     ap.add_argument("--landscape", action="store_true",
                     help="size for a landscape orientation (swaps W/H)")
+    ap.add_argument("--fit", action="store_true",
+                    help="fit the whole image (no crop), pad the edges — avoids zoom")
+    ap.add_argument("--fill-v", dest="fill_v", action="store_true",
+                    help="fill the screen vertically (no black), center-crop the sides")
+    ap.add_argument("--pad", type=parse_rgb, default=(0, 0, 0),
+                    help="pad colour for --fit as R,G,B (default 0,0,0 black)")
     args = ap.parse_args()
 
     if args.w and args.h:
@@ -83,8 +124,13 @@ def main():
         W, H = H, W   # the firmware shows the splash at the active rotation's size
 
     img = Image.open(args.input).convert("RGB")
-    img = crop_to_aspect(img, W, H, args.cx, args.cy)
-    img = img.resize((W, H), Image.LANCZOS)
+    if args.fit:
+        img = fit_to_canvas(img, W, H, args.pad)
+    elif args.fill_v:
+        img = fill_height(img, W, H, args.cx)
+    else:
+        img = crop_to_aspect(img, W, H, args.cx, args.cy)
+        img = img.resize((W, H), Image.LANCZOS)
 
     # The firmware reads the file with tft.setSwapBytes(true), which sends each
     # 16-bit value MSB-first (same path as fillRect). For that to be correct, the
