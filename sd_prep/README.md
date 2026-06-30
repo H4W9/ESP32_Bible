@@ -213,6 +213,10 @@ python make_splash.py esp32c5.png --board pancake
 python make_splash.py esp32c5.png --board v8
 :: nudge the crop onto the chip if needed (fractions of the image):
 python make_splash.py esp32c5.png --board pancake --cx 0.62 --cy 0.48
+:: nudge the crop onto the chip (just right for v8) 
+python make_splash.py esp32c5.png --board v8 --cx 0.44
+:: nudge the crop onto the chip (just right for Pancake) 
+python make_splash.py esp32c5.png --board pancake --cx 0.42
 ```
 
 The splash is shown at the **active screen orientation**. You can keep **both** a portrait and a
