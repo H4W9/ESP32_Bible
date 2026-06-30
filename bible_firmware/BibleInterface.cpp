@@ -648,6 +648,29 @@ void BibleInterface::drawScrollBar(int16_t total, int16_t vis, int16_t top) {
     tft.fillRect(barX, thumbY, 6, thumbH, edgeColor(top, dim_fg()));
 }
 
+// Prettify a filename stem for display: '_' → ' ' and capitalize the first
+// letter of each word (e.g. "lutherisches_gesangbuch" → "Lutherisches
+// Gesangbuch", "web" → "Web"). The raw stem is still used for SD paths; this is
+// display-only. Returns a pointer to a reusable static buffer — draw it before
+// the next call (all current callers draw one row at a time).
+static const char* prettyName(const char* stem) {
+    static char buf[BIBLE_TRANS_LEN + 16];
+    size_t n = 0;
+    bool   word_start = true;
+    for (const char* p = stem; *p && n < sizeof(buf) - 1; p++) {
+        char c = (*p == '_') ? ' ' : *p;
+        if (c == ' ') {
+            word_start = true;
+        } else {
+            if (word_start && c >= 'a' && c <= 'z') c -= 32;  // capitalize word start
+            word_start = false;
+        }
+        buf[n++] = c;
+    }
+    buf[n] = 0;
+    return buf;
+}
+
 // Redraws only the list content area (rows + scrollbar) without touching the
 // header or nav bar.  Called directly during scroll drag/fling so there is no
 // full-screen repaint — eliminating the white/black flash between frames.
@@ -674,7 +697,7 @@ void BibleInterface::redrawListContent(uint16_t item_count) {
 
         switch (view) {
             case BV_TRANS_SELECT:
-                drawListRow(y, trans_stems[idx],
+                drawListRow(y, prettyName(trans_stems[idx]),
                             idx == (int16_t)menu_sel);
                 break;
             case BV_SECTION_SELECT:
@@ -770,7 +793,7 @@ void BibleInterface::drawTransSelect() {
     uint8_t vis = visItems();
     for (uint8_t i = 0; i < vis && (menu_scroll + i) < trans_count; i++) {
         bool sel = (menu_scroll + i) == (int16_t)menu_sel;
-        drawListRow(contentY() + i * itemH(), trans_stems[menu_scroll + i], sel);
+        drawListRow(contentY() + i * itemH(), prettyName(trans_stems[menu_scroll + i]), sel);
     }
     drawScrollBar(trans_count, vis, menu_scroll);
     drawNavBar("Marks", "Settings", "Bright");
@@ -781,7 +804,7 @@ void BibleInterface::drawTransSelect() {
 // ─────────────────────────────────────────────────────────────────────────────
 void BibleInterface::drawSectionSelect() {
     tft.fillScreen(bg());
-    drawHeader(trans_count > 0 ? trans_stems[cur_trans] : "Bible", true);
+    drawHeader(trans_count > 0 ? prettyName(trans_stems[cur_trans]) : "Bible", true);
     // Scroll-aware: Songs can have many categories (sections), so honor menu_scroll
     // and draw a scrollbar (Bible's 4 sections always fit).
     uint8_t vis = visItems();
@@ -1237,7 +1260,7 @@ void BibleInterface::redrawSettingsContent() {
                 uint8_t sm = settingsScopeMode();
                 const char* tl = (sm == MODE_SONGS) ? "Song Book"
                                : (sm == MODE_DICT)  ? "Dictionary" : "Translation";
-                transRow(row_y, tl, sc_trans_count > 0 ? sc_trans[sc_trans_cur] : "-", sel);
+                transRow(row_y, tl, sc_trans_count > 0 ? prettyName(sc_trans[sc_trans_cur]) : "-", sel);
                 break;
             }
             case SR_FONTSIZE: {
