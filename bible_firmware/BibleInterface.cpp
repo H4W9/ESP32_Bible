@@ -312,7 +312,7 @@ BibleInterface::BibleInterface()
       scroll_dragging(false),
       scroll_px(0.f), fling_vel(0.f), fling_ms(0), fling_active(false),
       drag_origin_px(0.f), vbuf_i(0),
-      trans_marq_on(false), trans_marq_winx(0), trans_marq_winw(0), trans_marq_texty(0),
+      trans_marq_on(false), trans_marq_winx(0), trans_marq_winy(0), trans_marq_winw(0), trans_marq_texty(0),
       trans_marq_textw(0), trans_marq_off(0), trans_marq_bg(0), trans_marq_fg(0), trans_marq_ms(0),
       book_offsets(nullptr), book_offsets_cap(0),
       book_idx_valid(false), book_idx_trans(0xFF),
@@ -1178,6 +1178,7 @@ void BibleInterface::redrawSettingsContent() {
             trans_marq_ms  = millis();
         }
         trans_marq_winx  = win_left;
+        trans_marq_winy  = row_y;
         trans_marq_winw  = win_w;
         trans_marq_texty = nam_y;
         trans_marq_textw = textw;
@@ -1264,8 +1265,18 @@ void BibleInterface::redrawSettingsContent() {
 // and the marquee tick. Must be called inside a startWrite()/endWrite() pair.
 void BibleInterface::drawTransValue(int16_t off) {
     const int16_t GAP = 24;
-    tft.setViewport(trans_marq_winx, contentY(), trans_marq_winw, contentH(), false);
-    tft.fillRect(trans_marq_winx, contentY(), trans_marq_winw, contentH(), trans_marq_bg);
+    // Clip to just this row's band (intersected with the content area) — NOT the
+    // whole content height, or it paints a tall bar over the other rows' column.
+    int16_t top = trans_marq_winy;
+    int16_t bot = trans_marq_winy + (int16_t)itemH();
+    int16_t cy0 = (int16_t)contentY();
+    int16_t cy1 = cy0 + (int16_t)contentH();
+    if (top < cy0) top = cy0;
+    if (bot > cy1) bot = cy1;
+    int16_t h = bot - top;
+    if (h <= 0) return;
+    tft.setViewport(trans_marq_winx, top, trans_marq_winw, h, false);
+    tft.fillRect(trans_marq_winx, top, trans_marq_winw, h, trans_marq_bg);
     int16_t x0 = trans_marq_winx - off;
     int16_t tx = x0;
     for (const char* p = trans_marq_str; *p; p++)

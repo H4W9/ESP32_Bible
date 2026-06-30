@@ -276,6 +276,7 @@ private:
     // ── Settings "Translation" row marquee (value text scrolls in a fixed gap) ─
     bool      trans_marq_on;    // true when the value overflows its window & is visible
     int16_t   trans_marq_winx;  // absolute X of the value window
+    int16_t   trans_marq_winy;  // absolute Y (top) of the row band
     int16_t   trans_marq_winw;  // window width (px)
     int16_t   trans_marq_texty; // absolute baseline Y of the value text
     int16_t   trans_marq_textw; // pixel width of the value string
