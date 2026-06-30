@@ -312,6 +312,8 @@ BibleInterface::BibleInterface()
       scroll_dragging(false),
       scroll_px(0.f), fling_vel(0.f), fling_ms(0), fling_active(false),
       drag_origin_px(0.f), vbuf_i(0),
+      trans_marq_on(false), trans_marq_winx(0), trans_marq_winw(0), trans_marq_texty(0),
+      trans_marq_textw(0), trans_marq_off(0), trans_marq_bg(0), trans_marq_fg(0), trans_marq_ms(0),
       book_offsets(nullptr), book_offsets_cap(0),
       book_idx_valid(false), book_idx_trans(0xFF),
       line_spr(&tft)
@@ -321,6 +323,7 @@ BibleInterface::BibleInterface()
 {
     memset(vbuf_y,        0, sizeof(vbuf_y));
     memset(vbuf_t,        0, sizeof(vbuf_t));
+    trans_marq_str[0] = '\0';
     if (book_offsets) memset(book_offsets, 0, (size_t)book_offsets_cap * sizeof(uint32_t));
     memset(search_query,  0, sizeof(search_query));
     memset(search_hist,   0, sizeof(search_hist));
@@ -424,6 +427,8 @@ void BibleInterface::main(uint32_t currentTime) {
         case BV_SEARCH_INPUT:    handleSearchInputInput();              break;
         case BV_SEARCH_RESULTS:  handleSearchResultsInput();            break;
     }
+
+    if (view == BV_SETTINGS) tickTransMarquee();   // slow-scroll a long Translation value
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1134,6 +1139,53 @@ void BibleInterface::redrawSettingsContent() {
         tft.setTextColor(TFT_WHITE, hdr_bg());
         tft.drawCentreString("<", bwd_bx + btn_w / 2, txt_y, 2);
     };
+    // Translation row: the value can be long, so instead of letting it push the
+    // [<] button onto the "Translation" label, the two selectors bracket a fixed
+    // ~11-character window and the value text scrolls (marquee) inside it.
+    auto transRow = [&](int16_t row_y, const char* label, const char* name, bool sel) {
+        drawListRow(row_y, label, sel, false);
+        uint16_t bg_c   = sel ? sel_bg() : bg();
+        int16_t  btn_y  = row_y + (itemH() - btn_h) / 2;
+        int16_t  txt_y  = btn_y + (btn_h - 16) / 2;
+        int16_t  nam_y  = row_y + (itemH() - 16) / 2;
+        int16_t  fwd_bx = (int16_t)scrW() - 9 - btn_w;
+        int16_t  eseed  = row_y / (int16_t)itemH();
+        // [>]
+        tft.fillRoundRect(fwd_bx, btn_y, btn_w, btn_h, btn_r, hdr_bg());
+        tft.drawRoundRect(fwd_bx, btn_y, btn_w, btn_h, btn_r, edgeColor(eseed, dim_fg()));
+        tft.setTextColor(TFT_WHITE, hdr_bg());
+        tft.drawCentreString(">", fwd_bx + btn_w / 2, txt_y, 2);
+        // Fixed window (~11 chars) for [<], but never let it overlap the label.
+        int16_t want_w  = (int16_t)tft.textWidth("Translation", 2);   // 11-char reference
+        int16_t label_w = (int16_t)tft.textWidth(label, 2);
+        int16_t bwd_des = fwd_bx - 4 - want_w - 4 - btn_w;
+        int16_t bwd_min = 10 + label_w + 8;        // sit just right of the label
+        int16_t bwd_bx  = bwd_des > bwd_min ? bwd_des : bwd_min;
+        // [<]
+        tft.fillRoundRect(bwd_bx, btn_y, btn_w, btn_h, btn_r, hdr_bg());
+        tft.drawRoundRect(bwd_bx, btn_y, btn_w, btn_h, btn_r, edgeColor(eseed + 4, dim_fg()));
+        tft.setTextColor(TFT_WHITE, hdr_bg());
+        tft.drawCentreString("<", bwd_bx + btn_w / 2, txt_y, 2);
+        // Value window between the inner edges of the two buttons.
+        int16_t win_left = bwd_bx + btn_w + 4;
+        int16_t win_w    = (fwd_bx - 4) - win_left;
+        if (win_w < 8) win_w = 8;
+        int16_t textw = (int16_t)tft.textWidth(name, 2);
+        if (strncmp(trans_marq_str, name, sizeof(trans_marq_str)) != 0) {
+            strncpy(trans_marq_str, name, sizeof(trans_marq_str) - 1);
+            trans_marq_str[sizeof(trans_marq_str) - 1] = '\0';
+            trans_marq_off = 0;
+            trans_marq_ms  = millis();
+        }
+        trans_marq_winx  = win_left;
+        trans_marq_winw  = win_w;
+        trans_marq_texty = nam_y;
+        trans_marq_textw = textw;
+        trans_marq_bg    = bg_c;
+        trans_marq_fg    = fg();
+        trans_marq_on    = (textw > win_w);
+        drawTransValue(trans_marq_on ? trans_marq_off : 0);
+    };
     auto brightRow = [&](int16_t row_y, bool sel) {
         drawListRow(row_y, "Brightness", sel, false);
         uint16_t bg_c  = sel ? sel_bg() : bg();
@@ -1159,6 +1211,10 @@ void BibleInterface::redrawSettingsContent() {
         tft.drawCentreString("-", minus_bx + btn_w / 2, txt_y, 2);
     };
 
+    // Cleared each pass; transRow re-asserts it only if the Translation row is
+    // actually drawn and overflowing, so a scrolled-off row stops the marquee.
+    trans_marq_on = false;
+
     int16_t last_bottom = content_top;
     for (int vi = 0; ; vi++) {
         int16_t i     = first + vi;
@@ -1174,7 +1230,7 @@ void BibleInterface::redrawSettingsContent() {
                 uint8_t sm = settingsScopeMode();
                 const char* tl = (sm == MODE_SONGS) ? "Song Book"
                                : (sm == MODE_DICT)  ? "Dictionary" : "Translation";
-                choiceRow(row_y, tl, sc_trans_count > 0 ? sc_trans[sc_trans_cur] : "-", sel, 0);
+                transRow(row_y, tl, sc_trans_count > 0 ? sc_trans[sc_trans_cur] : "-", sel);
                 break;
             }
             case SR_FONTSIZE: {
@@ -1200,6 +1256,43 @@ void BibleInterface::redrawSettingsContent() {
 
     tft.resetViewport();
     drawScrollBar((int16_t)set_row_n, vis, first);
+    tft.endWrite();
+}
+
+// Draws the Translation value text into its window at horizontal scroll `off`,
+// clipped to the window via a temporary viewport. Used for both the static draw
+// and the marquee tick. Must be called inside a startWrite()/endWrite() pair.
+void BibleInterface::drawTransValue(int16_t off) {
+    const int16_t GAP = 24;
+    tft.setViewport(trans_marq_winx, contentY(), trans_marq_winw, contentH(), false);
+    tft.fillRect(trans_marq_winx, contentY(), trans_marq_winw, contentH(), trans_marq_bg);
+    int16_t x0 = trans_marq_winx - off;
+    int16_t tx = x0;
+    for (const char* p = trans_marq_str; *p; p++)
+        tx += tftCharUTF8(tft, (uint8_t)*p, tx, trans_marq_texty, 2, trans_marq_fg);
+    if (trans_marq_on) {                       // second copy for a seamless wrap
+        int16_t tx2 = x0 + trans_marq_textw + GAP;
+        int16_t end = trans_marq_winx + trans_marq_winw;
+        for (const char* p = trans_marq_str; *p && tx2 < end; p++)
+            tx2 += tftCharUTF8(tft, (uint8_t)*p, tx2, trans_marq_texty, 2, trans_marq_fg);
+    }
+    tft.setViewport(0, contentY(), scrW(), contentH(), false);  // restore content clip
+}
+
+// Advances the Translation marquee slowly and redraws just its window. Called
+// every loop while the Settings view is idle (no drag/fling/press in progress).
+void BibleInterface::tickTransMarquee() {
+    if (!trans_marq_on) return;
+    if (scroll_dragging || fling_active || touch_was_down) return;
+    uint32_t now = millis();
+    uint32_t interval = (trans_marq_off == 0) ? 900 : 55;   // dwell at start, then ~18 px/s
+    if (now - trans_marq_ms < interval) return;
+    trans_marq_ms = now;
+    trans_marq_off += 1;
+    if (trans_marq_off >= trans_marq_textw + 24) trans_marq_off = 0;  // wrap (GAP)
+    tft.startWrite();
+    drawTransValue(trans_marq_off);
+    tft.resetViewport();   // don't leave the content clip set for the next view's redraw
     tft.endWrite();
 }
 
@@ -2220,8 +2313,35 @@ void BibleInterface::applyOrientation() {
 // is rotated after a single (portrait) calibration.
 bool BibleInterface::resistiveTouch(uint16_t* x, uint16_t* y) {
     if (tft.getTouchRawZ() < 600) return false;        // pressure threshold
-    uint16_t rx = 0, ry = 0;
-    tft.getTouchRaw(&rx, &ry);
+    // The XPT2046 is noisy: a single raw read jitters by tens of pixels, which the
+    // shared scroll logic misreads as a drag + fling — that made the settings list
+    // flicker, scroll on its own, and swallow the Back tap. So take several samples
+    // and average the middle ones (drop the min and max on each axis). Require a
+    // few stable reads, otherwise treat it as no-touch (rejects pressure bounce and
+    // phantom spikes that produced ghost taps).
+    const uint8_t N = 7;
+    uint16_t bx[N], by[N];
+    uint8_t got = 0;
+    for (uint8_t i = 0; i < N; i++) {
+        if (tft.getTouchRawZ() < 600) break;
+        uint16_t srx = 0, sry = 0;
+        tft.getTouchRaw(&srx, &sry);
+        bx[got] = srx; by[got] = sry; got++;
+    }
+    if (got < 4) return false;                          // not a stable press
+    uint32_t sumx = 0, sumy = 0;
+    uint16_t minx = 0xFFFF, maxx = 0, miny = 0xFFFF, maxy = 0;
+    for (uint8_t i = 0; i < got; i++) {
+        sumx += bx[i]; sumy += by[i];
+        if (bx[i] < minx) minx = bx[i];
+        if (bx[i] > maxx) maxx = bx[i];
+        if (by[i] < miny) miny = by[i];
+        if (by[i] > maxy) maxy = by[i];
+    }
+    sumx -= (uint32_t)minx + maxx;                      // drop the extremes
+    sumy -= (uint32_t)miny + maxy;
+    uint16_t rx = (uint16_t)(sumx / (got - 2));
+    uint16_t ry = (uint16_t)(sumy / (got - 2));
     const int32_t NW = 240, NH = 320;                  // native portrait (ILI9341)
     int32_t x0 = cal_data[0], x1 = cal_data[1] ? cal_data[1] : 1;
     int32_t y0 = cal_data[2], y1 = cal_data[3] ? cal_data[3] : 1;
@@ -2570,8 +2690,7 @@ void BibleInterface::handleMainMenuInput() {
             goToSettings(true);   // from main menu
             return;
         }
-        // Tap elsewhere (e.g. dismissing a "no files" message) — repaint the menu.
-        needs_redraw = true;
+        // Tap on empty menu background: do nothing (no flash / repaint).
     }
 }
 

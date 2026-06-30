@@ -273,6 +273,18 @@ private:
     uint32_t  vbuf_t[4];        // timestamp ring buffer
     uint8_t   vbuf_i;           // ring buffer write index (0-3)
 
+    // ── Settings "Translation" row marquee (value text scrolls in a fixed gap) ─
+    bool      trans_marq_on;    // true when the value overflows its window & is visible
+    int16_t   trans_marq_winx;  // absolute X of the value window
+    int16_t   trans_marq_winw;  // window width (px)
+    int16_t   trans_marq_texty; // absolute baseline Y of the value text
+    int16_t   trans_marq_textw; // pixel width of the value string
+    int16_t   trans_marq_off;   // current scroll offset (px)
+    uint16_t  trans_marq_bg;    // window background colour
+    uint16_t  trans_marq_fg;    // value text colour
+    uint32_t  trans_marq_ms;    // timestamp of last marquee advance
+    char      trans_marq_str[64];
+
     // ── Book byte-offset index (fast chapter loads) ───────────────────────
     // Dynamically allocated, sized to numBooks() for the active mode. For Bible
     // it is filled from the .idx file; for Songs/Dict it is filled by loadToc().
@@ -311,6 +323,8 @@ private:
     void drawReading();
     void drawSettings();
     void redrawSettingsContent(); // partial redraw — rows only, no fillScreen/header/nav
+    void drawTransValue(int16_t off); // draw the Translation value text at scroll offset
+    void tickTransMarquee();          // advance + redraw the marquee (called from main)
     // Settings rows are dynamic (depend on Settings Scope + board), addressed by kind.
     enum SettingRow : uint8_t {
         SR_SCOPE, SR_TRANS, SR_FONTSIZE, SR_FONTCOL, SR_VNUMCOL,
