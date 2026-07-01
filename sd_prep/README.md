@@ -143,7 +143,7 @@ A `*.txt` export from dict.cc: `source <TAB> translation <TAB> wordtype <TAB> ca
 python generate_dict_xml.py dictcc "EN-DE.txt" --name DE-EN --out dict_out
 
 :: Both directions from one file (forward + columns-swapped reverse)
-python generate_dict_xml.py dictcc "EN-DE.txt" --name DE-EN --bidirectional --reverse-name EN-DE --out dict_out
+python generate_dict_xml.py dictcc "EN-DE.txt" --name DE-EN --bidirectional --reverse-name EN-DE --out dictionary_out
 ```
 
 | Option            | Default     | Meaning                                       |
@@ -158,11 +158,11 @@ python generate_dict_xml.py dictcc "EN-DE.txt" --name DE-EN --bidirectional --re
 A full language dump from <https://kaikki.org/dictionary/> (`word -> definition senses`).
 
 ```cmd
-python generate_dict_xml.py wiktionary "kaikki.org-dictionary-German.jsonl"  --lang de --name DE --out dict_out
-python generate_dict_xml.py wiktionary "kaikki.org-dictionary-English.jsonl" --lang en --name EN --out dict_out
+python generate_dict_xml.py wiktionary "kaikki.org-dictionary-German.jsonl"  --lang de --name Wiktionary_DE --out dictionary_out
+python generate_dict_xml.py wiktionary "kaikki.org-dictionary-English.jsonl" --lang en --name Wiktionary_EN --out dictionary_out
 
 :: Smaller output: fewer senses, only main word classes
-python generate_dict_xml.py wiktionary "kaikki.org-dictionary-German.jsonl" --lang de --name DE --max-senses 2 --out dict_out
+python generate_dict_xml.py wiktionary "kaikki.org-dictionary-German.jsonl" --lang de --name DE --max-senses 2 --out dictionary_out
 ```
 
 | Option          | Default      | Meaning                          |
