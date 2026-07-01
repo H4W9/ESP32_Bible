@@ -5,6 +5,11 @@
 
 #include "BibleKeyboard.h"
 
+// Shared VLW font pointers (defined in BibleInterface.cpp) — avoids duplicating the
+// font arrays in this translation unit. Used to render the options strip X-Small.
+extern const uint8_t* g_kb_font_small;   // X-Small
+extern const uint8_t* g_kb_font_main;    // normal UI size
+
 #ifdef HAS_TOUCH
 
 #include <string.h>
@@ -125,6 +130,7 @@ static void drawOptions(TFT_eSPI& tft, uint16_t fg, uint16_t bg,
                         const char* scope_label = nullptr,
                         const char* const* scope_opts = nullptr,
                         uint8_t scope_count = 0) {
+    tft.loadFont(g_kb_font_small);   // X-Small for the option labels/buttons
     int16_t  optY   = kbY(scrH) - optH();
     uint16_t opt_bg = (bg == TFT_WHITE) ? (uint16_t)0xBDF7 : (uint16_t)0x1082;
     uint16_t bdr    = (bg == TFT_WHITE) ? (uint16_t)0x8430 : (uint16_t)0x4208;
@@ -176,6 +182,7 @@ static void drawOptions(TFT_eSPI& tft, uint16_t fg, uint16_t bg,
             bx += bw + 4;
         }
     }
+    tft.loadFont(g_kb_font_main);   // restore the normal UI size
 }
 
 // Draw the text area (top half of screen minus options strip): title + current buffer.
@@ -290,11 +297,10 @@ static void drawKeyboard(TFT_eSPI& tft, uint16_t fg, uint16_t bg,
     tft.setTextColor(TFT_RED, key_bg);
     tft.drawCentreString("X", cW / 2, ctrlY, 2);
 
-    // Col 1: SYM / ABC toggle — font 1 (3 chars may be tight in a single cell)
+    // Col 1: SYM / ABC toggle — centered like the other control-row keys.
     tft.drawRect(cW, rowY, cW, cH, bdr);
     tft.setTextColor(key_fg, key_bg);
-    tft.drawCentreString(layout == KB_ALPHA ? "SYM" : "ABC",
-                         cW + cW/2, rowY + cH/2 - 4, 1);
+    tft.drawCentreString(layout == KB_ALPHA ? "SYM" : "ABC", cW + cW/2, ctrlY, 2);
 
     // Col 2: ä / Ä
     tft.drawRect(2*cW, rowY, cW, cH, bdr);

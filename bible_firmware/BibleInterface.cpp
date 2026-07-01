@@ -532,8 +532,7 @@ void BibleInterface::drawHeader(const char* title, bool show_back) {
         // Same style as nav bar buttons: hdr_bg fill + dim_fg border
         tft.fillRoundRect(2, 3, 40, 22, 4, hdr_bg());
         tft.drawRoundRect(2, 3, 40, 22, 4, edgeColor(0, dim_fg()));
-        tft.setTextColor(ch_fg, hdr_bg());
-        tft.drawCentreString("<", 22, 10, 1);
+        drawChevron(2, 3, 40, 22, false, ch_fg);   // crisp centered back arrow
     }
     // Title — rendered char-by-char so umlauts/ß (private codes) show correctly
     // (song titles, dictionary word pairs). Centred, clipped to avoid the back
@@ -570,8 +569,12 @@ void BibleInterface::drawHeader(const char* title, bool show_back) {
     if (batt_pct >= 0) {
         char pct[8];
         snprintf(pct, sizeof(pct), "%d%%", (int)batt_pct);
+        setUiFont(1);   // X-Small battery %, cleared bg so it never leaves artifacts
         tft.setTextColor(ch_fg, hdr_bg());
-        tft.drawRightString(pct, (int16_t)(scrW() - 3), 10, 1);
+        int16_t by = ((int16_t)hdrH() - (int16_t)VLW_FONTS[1].lineH) / 2;
+        tft.fillRect((int16_t)scrW() - 33, 3, 30, (int16_t)hdrH() - 6, hdr_bg());  // right of search icon
+        tft.drawRightString(pct, (int16_t)(scrW() - 3), by, 1);
+        setUiFont(2);
     }
 #endif
 }
@@ -595,8 +598,7 @@ void BibleInterface::drawNavBar(const char* left, const char* mid, const char* r
         uint16_t bx = cx - bw / 2;
         tft.fillRoundRect(bx, by, bw, bh, 4, hdr_bg());
         tft.drawRoundRect(bx, by, bw, bh, 4, edgeColor(i * 2, dim_fg()));
-        tft.setTextColor(chromeFg(), hdr_bg());
-        tft.drawCentreString(labels[i], cx, by + (bh - 8) / 2, 1);
+        drawSmallCentered(labels[i], cx, by, bh, chromeFg(), hdr_bg());
     }
 }
 
@@ -612,6 +614,10 @@ static int16_t vlwSpaceWidth(const uint8_t* font);
 // TFT_eSPI text calls auto-route to it while it is loaded, so the whole UI renders
 // with the anti-aliased VLW font — and the umlaut glyphs come from the font itself.
 static const uint8_t* g_ui_vlw = VLW_FONTS[2].data;
+// Exposed to BibleKeyboard.cpp (external linkage) so it can render its options strip
+// X-Small without duplicating the font arrays in its translation unit.
+const uint8_t* g_kb_font_small = VLW_FONTS[1].data;
+const uint8_t* g_kb_font_main  = VLW_FONTS[2].data;
 
 // Draw one private-code character on tft at (x, y) using the loaded UI VLW font.
 // The bitmap `font`/`color` args are ignored (color comes from setTextColor).
@@ -638,10 +644,8 @@ void BibleInterface::drawListRow(int16_t y_px, const char* text, bool selected, 
     int16_t tx = 10;
     for (const char* p = text; *p && tx < max_x; p++)
         tx += tftCharUTF8(tft, (uint8_t)*p, tx, ty, 2, fg_c);
-    if (has_arrow) {
-        tft.setTextColor(dim_fg(), bg_c);
-        tft.drawString(">", scrW() - 20, ty, 2);
-    }
+    if (has_arrow)
+        drawChevron(scrW() - 22, y_px, 16, itemH(), true, font_fg());  // follows Font Color
     // divider
     tft.drawFastHLine(0, y_px + itemH() - 1, scrW(),
                       edgeColor(y_px / (int16_t)itemH(), dark_mode ? 0x2104 : 0xC618));
@@ -656,6 +660,30 @@ void BibleInterface::drawScrollBar(int16_t total, int16_t vis, int16_t top) {
     int16_t thumbH = max((int16_t)10, (int16_t)(barH * vis / total));
     int16_t thumbY = barY + (int16_t)((int32_t)top * (barH - thumbH) / max(1, total - vis));
     tft.fillRect(barX, thumbY, 6, thumbH, edgeColor(top, dim_fg()));
+}
+
+// Crisp centered "<"/">" selector arrow (solid triangle) — vector, so no font
+// reload; safe to call every frame in the settings scroll path.
+void BibleInterface::drawChevron(int16_t bx, int16_t by, int16_t bw, int16_t bh, bool right, uint16_t col) {
+    int16_t cx = bx + bw / 2, cy = by + bh / 2;
+    if (right) tft.fillTriangle(cx - 3, cy - 5, cx - 3, cy + 5, cx + 4, cy, col);
+    else       tft.fillTriangle(cx + 3, cy - 5, cx + 3, cy + 5, cx - 4, cy, col);
+}
+// Centered "+"/"-" for the brightness selector (2px strokes).
+void BibleInterface::drawPlusMinus(int16_t bx, int16_t by, int16_t bw, int16_t bh, bool plus, uint16_t col) {
+    int16_t cx = bx + bw / 2, cy = by + bh / 2;
+    tft.fillRect(cx - 5, cy - 1, 11, 2, col);              // horizontal bar
+    if (plus) tft.fillRect(cx - 1, cy - 5, 2, 11, col);    // vertical bar
+}
+// Draw centered text at the X-Small size, vertically centered in [boxY, boxY+boxH).
+// Toggles the loaded UI font; use only off the per-frame scroll path.
+void BibleInterface::drawSmallCentered(const char* s, int16_t cx, int16_t boxY, int16_t boxH,
+                                       uint16_t fg, uint16_t bg) {
+    setUiFont(1);   // X-Small
+    int16_t y = boxY + (boxH - (int16_t)VLW_FONTS[1].lineH) / 2;
+    tft.setTextColor(fg, bg);
+    tft.drawCentreString(s, cx, y, 1);
+    setUiFont(2);   // restore normal UI size
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1267,8 +1295,7 @@ void BibleInterface::redrawSettingsContent() {
         int16_t  eseed = row_y / (int16_t)itemH();
         tft.fillRoundRect(fwd_bx, btn_y, btn_w, btn_h, btn_r, hdr_bg());
         tft.drawRoundRect(fwd_bx, btn_y, btn_w, btn_h, btn_r, edgeColor(eseed, dim_fg()));
-        tft.setTextColor(TFT_WHITE, hdr_bg());
-        tft.drawCentreString(">", fwd_bx + btn_w / 2, txt_y, 2);
+        drawChevron(fwd_bx, btn_y, btn_w, btn_h, true, TFT_WHITE);
         int16_t nam_w = (int16_t)tft.textWidth(name, 2);
         int16_t nam_x = fwd_bx - 4 - nam_w;
         tft.setTextColor(name_col ? name_col : fg(), bg_c);
@@ -1276,8 +1303,7 @@ void BibleInterface::redrawSettingsContent() {
         int16_t bwd_bx = nam_x - 4 - btn_w;
         tft.fillRoundRect(bwd_bx, btn_y, btn_w, btn_h, btn_r, hdr_bg());
         tft.drawRoundRect(bwd_bx, btn_y, btn_w, btn_h, btn_r, edgeColor(eseed + 4, dim_fg()));
-        tft.setTextColor(TFT_WHITE, hdr_bg());
-        tft.drawCentreString("<", bwd_bx + btn_w / 2, txt_y, 2);
+        drawChevron(bwd_bx, btn_y, btn_w, btn_h, false, TFT_WHITE);
     };
     // Translation row: the value can be long, so instead of letting it push the
     // [<] button onto the "Translation" label, the two selectors bracket a fixed
@@ -1293,8 +1319,7 @@ void BibleInterface::redrawSettingsContent() {
         // [>]
         tft.fillRoundRect(fwd_bx, btn_y, btn_w, btn_h, btn_r, hdr_bg());
         tft.drawRoundRect(fwd_bx, btn_y, btn_w, btn_h, btn_r, edgeColor(eseed, dim_fg()));
-        tft.setTextColor(TFT_WHITE, hdr_bg());
-        tft.drawCentreString(">", fwd_bx + btn_w / 2, txt_y, 2);
+        drawChevron(fwd_bx, btn_y, btn_w, btn_h, true, TFT_WHITE);
         // Fixed window (~11 chars) for [<], but never let it overlap the label.
         int16_t want_w  = (int16_t)tft.textWidth("Translation", 2);   // 11-char reference
         int16_t label_w = (int16_t)tft.textWidth(label, 2);
@@ -1304,8 +1329,7 @@ void BibleInterface::redrawSettingsContent() {
         // [<]
         tft.fillRoundRect(bwd_bx, btn_y, btn_w, btn_h, btn_r, hdr_bg());
         tft.drawRoundRect(bwd_bx, btn_y, btn_w, btn_h, btn_r, edgeColor(eseed + 4, dim_fg()));
-        tft.setTextColor(TFT_WHITE, hdr_bg());
-        tft.drawCentreString("<", bwd_bx + btn_w / 2, txt_y, 2);
+        drawChevron(bwd_bx, btn_y, btn_w, btn_h, false, TFT_WHITE);
         // Value window between the inner edges of the two buttons.
         int16_t win_left = bwd_bx + btn_w + 4;
         int16_t win_w    = (fwd_bx - 4) - win_left;
@@ -1337,8 +1361,7 @@ void BibleInterface::redrawSettingsContent() {
         int16_t plus_bx = (int16_t)scrW() - 9 - btn_w;
         tft.fillRoundRect(plus_bx, btn_y, btn_w, btn_h, btn_r, hdr_bg());
         tft.drawRoundRect(plus_bx, btn_y, btn_w, btn_h, btn_r, edgeColor(eseed, dim_fg()));
-        tft.setTextColor(TFT_WHITE, hdr_bg());
-        tft.drawCentreString("+", plus_bx + btn_w / 2, txt_y, 2);
+        drawPlusMinus(plus_bx, btn_y, btn_w, btn_h, true, TFT_WHITE);
         char nbuf[8];
         snprintf(nbuf, sizeof(nbuf), "%d/20", bl_idx + 1);
         int16_t num_w = (int16_t)tft.textWidth(nbuf, 2);
@@ -1348,8 +1371,7 @@ void BibleInterface::redrawSettingsContent() {
         int16_t minus_bx = num_x - 4 - btn_w;
         tft.fillRoundRect(minus_bx, btn_y, btn_w, btn_h, btn_r, hdr_bg());
         tft.drawRoundRect(minus_bx, btn_y, btn_w, btn_h, btn_r, edgeColor(eseed + 4, dim_fg()));
-        tft.setTextColor(TFT_WHITE, hdr_bg());
-        tft.drawCentreString("-", minus_bx + btn_w / 2, txt_y, 2);
+        drawPlusMinus(minus_bx, btn_y, btn_w, btn_h, false, TFT_WHITE);
     };
 
     // Cleared each pass; transRow re-asserts it only if the Translation row is
@@ -1518,14 +1540,12 @@ void BibleInterface::drawConfirmDelete() {
     // Cancel (left)
     tft.fillRoundRect(pop_x + 4, btn_y, half_w, btn_h, 4, hdr_bg());
     tft.drawRoundRect(pop_x + 4, btn_y, half_w, btn_h, 4, dim_fg());
-    tft.setTextColor(TFT_WHITE, hdr_bg());
-    tft.drawCentreString("Cancel", pop_x + 4 + half_w / 2, btn_y + (btn_h - 8) / 2, 1);
+    drawSmallCentered("Cancel", pop_x + 4 + half_w / 2, btn_y, btn_h, TFT_WHITE, hdr_bg());
 
     // Delete (right) — red border + red text to signal destructive action
     tft.fillRoundRect(del_x, btn_y, half_w, btn_h, 4, hdr_bg());
     tft.drawRoundRect(del_x, btn_y, half_w, btn_h, 4, TFT_RED);
-    tft.setTextColor(TFT_RED, hdr_bg());
-    tft.drawCentreString("Delete", del_x + half_w / 2, btn_y + (btn_h - 8) / 2, 1);
+    drawSmallCentered("Delete", del_x + half_w / 2, btn_y, btn_h, TFT_RED, hdr_bg());
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -4342,13 +4362,11 @@ void BibleInterface::drawSearchDelConfirm() {
 
     tft.fillRoundRect(pop_x + 4, btn_y, half_w, btn_h, 4, hdr_bg());
     tft.drawRoundRect(pop_x + 4, btn_y, half_w, btn_h, 4, dim_fg());
-    tft.setTextColor(TFT_WHITE, hdr_bg());
-    tft.drawCentreString("Cancel", pop_x + 4 + half_w / 2, btn_y + (btn_h - 8) / 2, 1);
+    drawSmallCentered("Cancel", pop_x + 4 + half_w / 2, btn_y, btn_h, TFT_WHITE, hdr_bg());
 
     tft.fillRoundRect(del_x, btn_y, half_w, btn_h, 4, hdr_bg());
     tft.drawRoundRect(del_x, btn_y, half_w, btn_h, 4, TFT_RED);
-    tft.setTextColor(TFT_RED, hdr_bg());
-    tft.drawCentreString("Delete", del_x + half_w / 2, btn_y + (btn_h - 8) / 2, 1);
+    drawSmallCentered("Delete", del_x + half_w / 2, btn_y, btn_h, TFT_RED, hdr_bg());
 }
 
 // Draws one search result row: reference on top line, snippet (with highlighted
@@ -4534,6 +4552,7 @@ void BibleInterface::redrawSearchResultsContent() {
 
     tft.startWrite();
     tft.setViewport(0, cTop, scrW(), contentH(), false);
+    setUiFont(1);   // X-Small for result rows (one switch for the whole loop)
 
     // Draw each visible row (each fills its own background — no upfront clear,
     // which would cause a white/black flash between frames).
@@ -4546,6 +4565,7 @@ void BibleInterface::redrawSearchResultsContent() {
         int16_t bot = y + (int16_t)srchH();
         if (bot > last_bottom) last_bottom = bot;
     }
+    setUiFont(2);
     // Clear any unused space below the last row (list shorter than content zone)
     if (last_bottom < cEnd)
         tft.fillRect(0, last_bottom, (int16_t)scrW() - 6, cEnd - last_bottom, bg());
@@ -4572,11 +4592,13 @@ void BibleInterface::drawSearchResults() {
     }
 
     uint8_t vis = visSearchItems();
+    setUiFont(1);   // X-Small for result rows
     for (uint8_t i = 0; i < vis && (menu_scroll + i) < search_result_count; i++) {
         uint16_t idx = menu_scroll + i;
         drawSearchResultRow((int16_t)(contentY() + i * srchH()), idx,
                             idx == (uint16_t)search_res_sel);
     }
+    setUiFont(2);
     drawScrollBar(search_result_count, vis, menu_scroll);
     drawNavBar("Back", "", "View");
 }
@@ -4600,10 +4622,12 @@ void BibleInterface::drawMemUsage(int16_t y) {
 #else
     snprintf(buf, sizeof(buf), "D-RAM: %d%%", dpct);
 #endif
-    // Repaint a clean strip so the value updates in place without ghosting.
-    tft.fillRect(0, y, scrW(), 10, bg());
+    // Repaint a clean strip (X-Small height) so the value updates without ghosting.
+    setUiFont(1);
+    tft.fillRect(0, y, scrW(), (int16_t)VLW_FONTS[1].lineH + 2, bg());
     tft.setTextColor(dim_fg(), bg());
     tft.drawCentreString(buf, scrW() / 2, y, 1);
+    setUiFont(2);
 }
 
 void BibleInterface::drawSearchProgress(uint32_t done, uint32_t total) {
@@ -4635,8 +4659,11 @@ void BibleInterface::drawSearchProgress(uint32_t done, uint32_t total) {
         snprintf(pct, sizeof(pct), "%d%%", (int)(100UL * done / total));
     else
         snprintf(pct, sizeof(pct), "...");
-    tft.setTextColor(fg(), bg());
-    tft.drawCentreString(pct, scrW() / 2, bar_y + bar_h + 2, 1);
+    // Clear the previous number's band first (smooth text doesn't fill its bg, so a
+    // shorter value would otherwise leave the old digits behind).
+    int16_t pct_y = bar_y + bar_h + 2;
+    tft.fillRect(0, pct_y, scrW(), (int16_t)VLW_FONTS[1].lineH + 2, bg());
+    drawSmallCentered(pct, scrW() / 2, pct_y, (int16_t)VLW_FONTS[1].lineH, fg(), bg());
 
     // Live memory usage near the top of the content area (updates every call).
     drawMemUsage((int16_t)contentY() + 4);
@@ -5127,8 +5154,7 @@ bool BibleInterface::searchBible(const char* query) {
     const int16_t cbtn_y     = cbtn_bar_y + 14 + 18;  // below bar (14px) + pct-text (18px)
     tft.fillRoundRect(cbtn_x, cbtn_y, CBTN_W, CBTN_H, 4, hdr_bg());
     tft.drawRoundRect(cbtn_x, cbtn_y, CBTN_W, CBTN_H, 4, dim_fg());
-    tft.setTextColor(fg(), hdr_bg());
-    tft.drawCentreString("Cancel", (int16_t)(scrW() / 2), cbtn_y + (CBTN_H - 8) / 2, 1);
+    drawSmallCentered("Cancel", (int16_t)(scrW() / 2), cbtn_y, CBTN_H, fg(), hdr_bg());
 
     char path[64];
     snprintf(path, sizeof(path), "%s/%s.xml", basePath(), trans_stems[cur_trans]);

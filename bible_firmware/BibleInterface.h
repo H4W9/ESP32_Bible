@@ -322,6 +322,12 @@ private:
     // ── Drawing helpers ───────────────────────────────────────────────────
     void drawHeader(const char* title, bool show_back = true);
     void drawNavBar(const char* left, const char* mid, const char* right);
+    // Small-chrome helpers: vector selector symbols (no font reload — safe in the
+    // per-frame scroll path) and X-Small centered text for buttons/labels.
+    void drawChevron(int16_t bx, int16_t by, int16_t bw, int16_t bh, bool right, uint16_t col);
+    void drawPlusMinus(int16_t bx, int16_t by, int16_t bw, int16_t bh, bool plus, uint16_t col);
+    void drawSmallCentered(const char* s, int16_t cx, int16_t boxY, int16_t boxH,
+                           uint16_t fg, uint16_t bg);
     void clearContent();
 
     void drawLoading();
