@@ -172,6 +172,7 @@ private:
     // ── Display ───────────────────────────────────────────────────────────
     TFT_eSPI    tft;
     TFT_eSprite line_spr;   // per-line off-screen buffer for flicker-free reading scroll
+    int8_t      read_font_loaded;  // VLW size index currently loaded in line_spr (-1 = none)
 
     // ── Navigation position ───────────────────────────────────────────────
     uint8_t  cur_sec;
@@ -365,6 +366,7 @@ private:
     void redrawSearchResultsContent(); // partial redraw of search result list
     void drawScrollBar(int16_t total, int16_t vis, int16_t top);
     void drawReadingLines();
+    void loadReadingFont();   // (re)load the VLW font for font_num into line_spr
 
     // ── Colors ────────────────────────────────────────────────────────────
     uint16_t fg()      const;

@@ -7,6 +7,7 @@
 #include "BibleInterface.h"
 #include "BibleKeyboard.h"
 #include "BibleDrawUTF8.h"
+#include "fonts_vlw.h"      // flash-resident smooth (VLW) fonts for the reading view
 
 #ifdef HAS_SCREEN
 
@@ -292,7 +293,7 @@ BibleInterface::BibleInterface()
     : cur_sec(0), cur_book(0), cur_chapter(1), cur_trans(0),
       mode(MODE_BIBLE), rt_books(nullptr), rt_book_count(0),
       rt_secs(nullptr), rt_sec_count(0), rt_pages(nullptr), rt_page_count(0), rt_pages_book(0xFFFF),
-      view(BV_MAIN_MENU), dark_mode(true), theme_idx(0), font_num(2), font_color_idx(0),
+      view(BV_MAIN_MENU), dark_mode(true), theme_idx(0), font_num(1), font_color_idx(0),
       vnum_color_idx(0), orientation(0), menu_font_color_idx(0), accent_def(false), needs_redraw(true),
       settings_scope(0), settings_from_menu(false), set_row_n(0),
       sc_trans_count(0), sc_trans_cur(0),
@@ -317,7 +318,7 @@ BibleInterface::BibleInterface()
       about_mcu_y0(0), about_mcu_y1(0),
       book_offsets(nullptr), book_offsets_cap(0),
       book_idx_valid(false), book_idx_trans(0xFF),
-      line_spr(&tft)
+      line_spr(&tft), read_font_loaded(-1)
 #ifdef HAS_BATTERY
     , batt_ok(false), batt_pct(-1), batt_ms(0)
 #endif
@@ -355,7 +356,7 @@ void BibleInterface::RunSetup() {
     accent_idx = prefs.getUChar("accent", 0);
     if (accent_idx >= ACCENT_COUNT) accent_idx = 0;
     accent_def = (prefs.getUChar("accentdef", 0) != 0);
-    font_num   = 2;
+    font_num   = 1;   // default reading size = Medium (VLW index)
     loadMenuChrome();   // global chrome text colour
     blInit();   // must run before runTouchCalibration() so the backlight is on
 
@@ -505,11 +506,10 @@ uint16_t BibleInterface::scrH() const {
 }
 
 uint16_t BibleInterface::lineH() const {
-    switch (font_num) {
-        case 1: return 12;
-        case 4: return 30;
-        default: return 18; // font 2
-    }
+    // Reading text is drawn with a smooth VLW font; the row height is the font's
+    // ascent+descent plus a little leading. font_num is the VLW size index (0..3).
+    uint8_t idx = (font_num < VLW_FONT_COUNT) ? font_num : 1;
+    return (uint16_t)VLW_FONTS[idx].lineH + 3;
 }
 uint8_t BibleInterface::visItems() const { return contentH() / itemH(); }
 uint8_t BibleInterface::visLines() const { return contentH() / lineH(); }
@@ -646,6 +646,70 @@ void BibleInterface::drawScrollBar(int16_t total, int16_t vis, int16_t top) {
     int16_t thumbH = max((int16_t)10, (int16_t)(barH * vis / total));
     int16_t thumbY = barY + (int16_t)((int32_t)top * (barH - thumbH) / max(1, total - vis));
     tft.fillRect(barX, thumbY, 6, thumbH, edgeColor(top, dim_fg()));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Smooth (VLW) font helpers for the reading view.
+// The reader renders with an anti-aliased VLW font (fonts_vlw.h) instead of the
+// TFT_eSPI bitmap fonts. Umlauts are stored as private codes (0x80..0x86); the
+// VLW contains the real glyphs, so we map private → UTF-8 for drawString and read
+// glyph advances straight from the flash array for text wrapping.
+// ─────────────────────────────────────────────────────────────────────────────
+static inline uint32_t vlwBE32(const uint8_t* p) {
+    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) |
+           ((uint32_t)p[2] << 8)  |  (uint32_t)p[3];
+}
+// Map a private umlaut code to its Unicode code point (else pass ASCII through).
+static inline uint16_t vlwPrivToUnicode(uint8_t c) {
+    switch (c) {
+        case 0x80: return 0xC4; case 0x81: return 0xE4;   // Ä ä
+        case 0x82: return 0xD6; case 0x83: return 0xF6;   // Ö ö
+        case 0x84: return 0xDC; case 0x85: return 0xFC;   // Ü ü
+        case 0x86: return 0xDF;                            // ß
+        default:   return c;
+    }
+}
+// xAdvance (px) of a glyph in a VLW flash array, or -1 if the glyph is absent.
+static int16_t vlwAdvance(const uint8_t* font, uint16_t uni) {
+    uint16_t gCount = (uint16_t)vlwBE32(font);
+    const uint8_t* m = font + 24;
+    for (uint16_t i = 0; i < gCount; i++, m += 28)
+        if ((uint16_t)vlwBE32(m) == uni) return (int16_t)(uint8_t)vlwBE32(m + 12);
+    return -1;
+}
+// TFT_eSPI's guessed space width for a smooth font: (ascent + descent) * 2 / 7.
+static int16_t vlwSpaceWidth(const uint8_t* font) {
+    int16_t ascent  = (int16_t)vlwBE32(font + 16);
+    int16_t descent = (int16_t)vlwBE32(font + 20);
+    return (int16_t)(((ascent + descent) * 2) / 7);
+}
+// Pixel width of a private-code string in a VLW font — matches how TFT_eSPI
+// advances the cursor (glyph xAdvance; spaceWidth for ' '; spaceWidth+1 if absent).
+static int16_t vlwTextWidth(const uint8_t* font, const char* s) {
+    int16_t sw = vlwSpaceWidth(font);
+    int16_t w  = 0;
+    for (const uint8_t* p = (const uint8_t*)s; *p; p++) {
+        if (*p == ' ') { w += sw; continue; }
+        int16_t a = vlwAdvance(font, vlwPrivToUnicode(*p));
+        w += (a < 0) ? (int16_t)(sw + 1) : a;
+    }
+    return w;
+}
+// Convert a private-code string to UTF-8 (umlauts → 2-byte sequences) so the
+// VLW smooth-font drawString renders the real glyphs.
+static void vlwPrivToUtf8(const char* in, char* out, size_t n) {
+    size_t o = 0;
+    for (const uint8_t* p = (const uint8_t*)in; *p && o + 3 < n; p++) {
+        uint16_t u = vlwPrivToUnicode(*p);
+        if (u < 0x80) out[o++] = (char)u;
+        else { out[o++] = (char)(0xC0 | (u >> 6)); out[o++] = (char)(0x80 | (u & 0x3F)); }
+    }
+    out[o] = 0;
+}
+// The VLW font array for the current reading size index (font_num), clamped.
+static const uint8_t* vlwForSize(uint8_t idx) {
+    if (idx >= VLW_FONT_COUNT) idx = 1;
+    return VLW_FONTS[idx].data;
 }
 
 // Prettify a filename stem for display: '_' → ' ' and capitalize the first
@@ -885,7 +949,19 @@ void BibleInterface::drawChapterSelect() {
 // ─────────────────────────────────────────────────────────────────────────────
 // Reading view — draws the paged verse text
 // ─────────────────────────────────────────────────────────────────────────────
+// (Re)load the VLW smooth font for the current size into the line sprite. The
+// loaded font persists across createSprite/deleteSprite (only the destructor
+// unloads it), so this only does real work when the size actually changes.
+void BibleInterface::loadReadingFont() {
+    uint8_t idx = (font_num < VLW_FONT_COUNT) ? font_num : 1;
+    if (read_font_loaded == (int8_t)idx) return;
+    line_spr.loadFont(VLW_FONTS[idx].data);   // unloads any previous font first
+    read_font_loaded = (int8_t)idx;
+}
+
 void BibleInterface::drawReadingLines() {
+    loadReadingFont();
+    const uint8_t* vfont = vlwForSize(font_num);   // for verse-number width math
     int16_t  sub_px = (int16_t)fmodf(scroll_px, (float)lineH());
     int16_t  first  = (int16_t)(scroll_px / (float)lineH());
     uint8_t  vis    = visLines() + 1;   // +1 covers partial bottom row
@@ -906,6 +982,7 @@ void BibleInterface::drawReadingLines() {
         tft.endWrite();
         return;
     }
+    line_spr.setTextWrap(false, false);   // one glyph line per sprite — never wrap
 
     tft.setViewport(0, cy, scrW(), contentH(), false);
 
@@ -964,6 +1041,10 @@ void BibleInterface::drawReadingLines() {
 
         if (line_idx >= 0 && line_idx < (int16_t)line_count) {
             const char* ln = lines[line_idx];
+            char u8[BIBLE_LINE_BUF * 2];               // private codes → UTF-8 for the VLW font
+            const int16_t txt_y = 1;                   // small top pad inside the line sprite
+            // Smooth fonts render into a sprite via setCursor + printToSprite (the
+            // sprite's own drawGlyph); drawString would draw to the physical TFT.
             if (ln[0] == '^') {
                 const char* pipe = strchr(ln + 1, '|');
                 if (pipe) {
@@ -974,13 +1055,19 @@ void BibleInterface::drawReadingLines() {
                     num_str[n_len]     = '.';
                     num_str[n_len + 1] = 0;
                     line_spr.setTextColor(verse_num_fg(), line_bg);
-                    int16_t nx = line_spr.drawString(num_str, 4, 2, font_num);
+                    line_spr.setCursor(4, txt_y);
+                    line_spr.printToSprite(num_str, strlen(num_str));
+                    int16_t nx = vlwTextWidth(vfont, num_str);   // advance for content x
                     line_spr.setTextColor(font_fg(), line_bg);
-                    drawStringUTF8(line_spr, pipe + 1, 4 + nx + 2, 2, font_num, font_fg());
+                    line_spr.setCursor(4 + nx + 2, txt_y);
+                    vlwPrivToUtf8(pipe + 1, u8, sizeof(u8));
+                    line_spr.printToSprite(u8, strlen(u8));
                 }
             } else {
                 line_spr.setTextColor(font_fg(), line_bg);
-                drawStringUTF8(line_spr, ln, 4, 2, font_num, font_fg());
+                line_spr.setCursor(4, txt_y);
+                vlwPrivToUtf8(ln, u8, sizeof(u8));
+                line_spr.printToSprite(u8, strlen(u8));
             }
         }
 
@@ -1079,13 +1166,13 @@ void BibleInterface::loadScopeSettings() {
     theme_idx      = ok ? p.getUChar("theme",    0) : 0;
     accent_idx     = ok ? p.getUChar("accent",   0) : 0;
     accent_def     = ok ? (p.getUChar("accentdef", 0) != 0) : false;
-    font_num       = ok ? p.getUChar("font",     2) : 2;
+    font_num       = ok ? p.getUChar("font",     1) : 1;
     font_color_idx = ok ? p.getUChar("fontcol",  0) : 0;
     vnum_color_idx = ok ? p.getUChar("vnumcol",  0) : 0;
     if (ok) p.end();
     if (theme_idx      >= THEME_COUNT)      theme_idx = 0;
     if (accent_idx     >= ACCENT_COUNT)     accent_idx = 0;
-    if (font_num != 1 && font_num != 2 && font_num != 4) font_num = 2;
+    if (font_num >= VLW_FONT_COUNT) font_num = 1;   // VLW reading-size index (0..3)
     if (font_color_idx >= FONT_COLOR_COUNT) font_color_idx = 0;
     if (vnum_color_idx >= FONT_COLOR_COUNT) vnum_color_idx = 0;
     dark_mode = THEMES[theme_idx].dark;
@@ -1266,8 +1353,9 @@ void BibleInterface::redrawSettingsContent() {
                 break;
             }
             case SR_FONTSIZE: {
-                const char* sz = (font_num == 1) ? "Small" : (font_num == 2) ? "Medium" : "Large";
-                choiceRow(row_y, "Font Size", sz, sel, 0);
+                static const char* const SZ_NAMES[4] = { "Small", "Medium", "Large", "X-Large" };
+                uint8_t si = (font_num < VLW_FONT_COUNT && font_num < 4) ? font_num : 1;
+                choiceRow(row_y, "Font Size", SZ_NAMES[si], sel, 0);
                 break;
             }
             case SR_FONTCOL:   choiceRow(row_y, "Font Color",    FONT_COLOR_NAMES[font_color_idx], sel, font_fg());       break;
@@ -1964,9 +2052,11 @@ void BibleInterface::handleSettingsInput() {
                 redrawSettingsContent();
                 break;
             case SR_FONTSIZE:
-                font_num = fwd ? (font_num == 1 ? 2 : font_num == 2 ? 4 : 1)
-                               : (font_num == 1 ? 4 : font_num == 2 ? 1 : 2);
+                if (font_num >= VLW_FONT_COUNT) font_num = 1;
+                font_num = fwd ? (uint8_t)((font_num + 1) % VLW_FONT_COUNT)
+                               : (uint8_t)(font_num == 0 ? VLW_FONT_COUNT - 1 : font_num - 1);
                 writeScoped("font", font_num);
+                if (cached_count > 0) buildWrappedLines();   // re-wrap at the new size
                 redrawSettingsContent();
                 break;
             case SR_FONTCOL:
@@ -2740,7 +2830,7 @@ void BibleInterface::goToMainMenu() {
     accent_idx = prefs.getUChar("accent", 0);
     if (accent_idx >= ACCENT_COUNT) accent_idx = 0;
     accent_def = (prefs.getUChar("accentdef", 0) != 0);
-    font_num   = 2;
+    font_num   = 1;   // default reading size = Medium (VLW index)
     loadMenuChrome();
     // Keep the current backlight level (avoids a brightness flash when returning
     // from a mode); each mode still applies its own brightness on entry.
@@ -3629,6 +3719,7 @@ void BibleInterface::addWrappedLine(uint8_t verse_num, const char* text,
                                      uint16_t max_px, uint8_t fnt, uint16_t& idx) {
     const char* p            = text;
     bool        is_first_line = true;   // true only for the verse's first screen line
+    const uint8_t* vfont     = vlwForSize(fnt);   // reading uses the smooth VLW font
 
     // For the verse-first line the verse number prefix is drawn to the left of the
     // content text, so the available content width is narrowed by its pixel width.
@@ -3636,7 +3727,7 @@ void BibleInterface::addWrappedLine(uint8_t verse_num, const char* text,
     if (verse_num > 0) {
         char num_str[12];
         snprintf(num_str, sizeof(num_str), "%d.", verse_num);
-        int16_t num_w = textWidthUTF8(num_str, fnt) + 2;  // +2px gap
+        int16_t num_w = vlwTextWidth(vfont, num_str) + 2;  // +2px gap
         first_max_px  = (num_w < (int16_t)max_px) ? (uint16_t)(max_px - num_w) : 0;
     }
 
@@ -3680,7 +3771,7 @@ void BibleInterface::addWrappedLine(uint8_t verse_num, const char* text,
                 if (measure) measure++; else measure = tmp;
             }
 
-            int16_t px = textWidthUTF8(measure, fnt);
+            int16_t px = vlwTextWidth(vfont, measure);
             if (px > (int16_t)line_max && out_len > 0) break; // word doesn't fit
 
             memcpy(out, tmp, tmp_len + 1);
@@ -3706,7 +3797,7 @@ void BibleInterface::addWrappedLine(uint8_t verse_num, const char* text,
                 tmp2[n]   = 0;
                 // Measure only the content part (after prefix)
                 const char* measure2 = tmp2 + prefix_len;
-                if (textWidthUTF8(measure2, fnt) > (int16_t)line_max) {
+                if (vlwTextWidth(vfont, measure2) > (int16_t)line_max) {
                     // Back off the last character
                     if (n > prefix_len) { n--; tmp2[n] = 0; p--; }
                     break;
@@ -3744,7 +3835,7 @@ void BibleInterface::loadState() {
     cur_book          = prefs.getUShort("book",     0);
     cur_chapter       = prefs.getUShort("chap",     1);
     cur_trans         = prefs.getUChar("trans",     0);
-    font_num          = prefs.getUChar("font",      2);
+    font_num          = prefs.getUChar("font",      1);
     font_color_idx    = prefs.getUChar("fontcol",   0);
     if (font_color_idx >= FONT_COLOR_COUNT) font_color_idx = 0;
     vnum_color_idx    = prefs.getUChar("vnumcol",   0);
@@ -3762,7 +3853,7 @@ void BibleInterface::loadState() {
     if (mode == MODE_BIBLE && cur_book >= BIBLE_BOOK_COUNT) cur_book = 0;
     if (cur_chapter == 0)               cur_chapter = 1;
     if (cur_trans  >= BIBLE_MAX_TRANS)  cur_trans  = 0;
-    if (font_num != 1 && font_num != 2 && font_num != 4) font_num = 2;
+    if (font_num >= VLW_FONT_COUNT) font_num = 1;   // VLW reading-size index (0..3)
     if (accent_idx >= ACCENT_COUNT)     accent_idx = 0;
     if (srch_scope >= 3)                srch_scope  = 0;
     // Derive section from book so navigation back shows correct highlight.

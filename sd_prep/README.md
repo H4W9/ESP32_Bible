@@ -243,6 +243,22 @@ rest of the UI with no extra flags. If colours still look wrong, try one flag at
 `--bgr` (red/blue swap, e.g. a BGR panel like V8), `--invert` (photo negative), `--swap`
 (fall back to big-endian byte order). Combine as needed.
 
+## Reading font — `make_vlw.py`
+
+The verse reader uses anti-aliased **VLW smooth fonts** baked into the firmware
+(flash-resident, so scrolling stays smooth — no SD access per glyph). To change
+the typeface or sizes, regenerate the header from a TTF that includes the German
+umlauts (ä ö ü Ä Ö Ü ß), e.g. DejaVuSans:
+
+```cmd
+pip install freetype-py
+python make_vlw.py "C:\Windows\Fonts\DejaVuSans.ttf" --sizes 14,18,22,28 --out ..\bible_firmware\fonts_vlw.h
+```
+
+This writes `bible_firmware/fonts_vlw.h` (one `vlw_<px>[]` array per size plus a
+`VLW_FONTS[]` table). The four sizes map to the Settings → Font Size options
+Small / Medium / Large / X-Large. Rebuild the firmware after regenerating.
+
 ## Final SD card layout
 
 ```
