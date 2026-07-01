@@ -6,8 +6,7 @@
 
 #include "BibleInterface.h"
 #include "BibleKeyboard.h"
-#include "BibleDrawUTF8.h"
-#include "fonts_vlw.h"      // flash-resident smooth (VLW) fonts for the reading view
+#include "fonts_vlw.h"      // flash-resident smooth (VLW) fonts (reader + whole UI)
 
 #ifdef HAS_SCREEN
 
@@ -318,7 +317,7 @@ BibleInterface::BibleInterface()
       about_mcu_y0(0), about_mcu_y1(0),
       book_offsets(nullptr), book_offsets_cap(0),
       book_idx_valid(false), book_idx_trans(0xFF),
-      line_spr(&tft), read_font_loaded(-1)
+      line_spr(&tft), read_font_loaded(-1), ui_font_idx(-1)
 #ifdef HAS_BATTERY
     , batt_ok(false), batt_pct(-1), batt_ms(0)
 #endif
@@ -337,6 +336,7 @@ BibleInterface::BibleInterface()
 // ─────────────────────────────────────────────────────────────────────────────
 void BibleInterface::RunSetup() {
     tft.init();
+    setUiFont(2);   // load the UI smooth font (14px) so the whole UI renders with it
 
 #ifdef HAS_CAP_TOUCH
     ft6336_init();
@@ -357,7 +357,9 @@ void BibleInterface::RunSetup() {
     if (accent_idx >= ACCENT_COUNT) accent_idx = 0;
     accent_def = (prefs.getUChar("accentdef", 0) != 0);
     font_num   = 3;   // default reading size = Medium (VLW index)
-    loadMenuChrome();   // global chrome text colour
+    loadMenuChrome();
+    font_color_idx = menu_font_color_idx;   // chrome/menu text follows the menu Font Color
+    if (font_color_idx >= FONT_COLOR_COUNT) font_color_idx = 0;   // global chrome text colour
     blInit();   // must run before runTouchCalibration() so the backlight is on
 
     // Boot splash (SD /splash.raw) — shown for 2.5 s in the current orientation.
@@ -463,11 +465,13 @@ uint16_t BibleInterface::themeHighlight() const {
     int bl = ab + (bb - ab) * t / 255;
     return (uint16_t)((r << 11) | (g << 5) | bl);
 }
-// Global UI chrome text colour (header titles, nav/footer buttons, menu labels).
-// Driven by the Main Menu scope's Font Color so it can be themed globally.
+// UI chrome text colour (header titles, nav/footer buttons, menu labels). Follows
+// the active scope's Font Color setting so changing Font Color recolours the menus
+// and buttons too; falls back to white (legible on the button/header backgrounds)
+// when Font Color is left on "Default".
 uint16_t BibleInterface::chromeFg() const {
-    return (menu_font_color_idx == 0 || menu_font_color_idx >= FONT_COLOR_COUNT)
-           ? TFT_WHITE : FONT_COLOR_VAL[menu_font_color_idx];
+    return (font_color_idx == 0 || font_color_idx >= FONT_COLOR_COUNT)
+           ? TFT_WHITE : FONT_COLOR_VAL[font_color_idx];
 }
 void BibleInterface::loadMenuChrome() {
     Preferences p;
@@ -600,25 +604,31 @@ void BibleInterface::clearContent() {
     tft.fillRect(0, contentY(), scrW(), contentH(), bg());
 }
 
-// Draw one private-code character on tft at (x, y) in the given font.
-// setTextColor must be set by the caller before use.  Returns advance width.
+// Forward declarations for the VLW helpers used below (defined after drawListRow).
+static inline uint16_t vlwPrivToUnicode(uint8_t c);
+static int16_t vlwAdvance(const uint8_t* font, uint16_t uni);
+static int16_t vlwSpaceWidth(const uint8_t* font);
+// The UI (menus / headers / nav / keyboard) smooth font, kept loaded on tft. All
+// TFT_eSPI text calls auto-route to it while it is loaded, so the whole UI renders
+// with the anti-aliased VLW font — and the umlaut glyphs come from the font itself.
+static const uint8_t* g_ui_vlw = VLW_FONTS[2].data;
+
+// Draw one private-code character on tft at (x, y) using the loaded UI VLW font.
+// The bitmap `font`/`color` args are ignored (color comes from setTextColor).
+// Returns the advance width.
 static int16_t tftCharUTF8(TFT_eSPI& tft, uint8_t c, int16_t x, int16_t y,
-                             uint8_t font, uint16_t color) {
-    static const char ubases[] = {'A','a','O','o','U','u'};
-    if (c == 0x86)
-        return bibleDrawSzlig(tft, x, y, font, color);
-    if (c >= 0x80 && c <= 0x85) {
-        bool    is_lower = ((c - 0x80) & 1) != 0;
-        int16_t adv      = tft.drawChar((uint16_t)(uint8_t)ubases[c - 0x80], x, y, font);
-        bibleDrawUmlautDots(tft, x, y, adv, is_lower, font, color);
-        return adv;
-    }
-    return tft.drawChar((uint16_t)c, x, y, font);
+                             uint8_t /*font*/, uint16_t /*color*/) {
+    uint16_t uni = vlwPrivToUnicode(c);
+    tft.setCursor(x, y);
+    tft.drawGlyph(uni);                       // uses tft's loaded smooth font
+    if (c == ' ') return vlwSpaceWidth(g_ui_vlw);
+    int16_t a = vlwAdvance(g_ui_vlw, uni);
+    return (a < 0) ? (int16_t)(vlwSpaceWidth(g_ui_vlw) + 1) : a;
 }
 
 void BibleInterface::drawListRow(int16_t y_px, const char* text, bool selected, bool has_arrow) {
     uint16_t bg_c  = selected ? sel_bg() : bg();
-    uint16_t fg_c  = fg();
+    uint16_t fg_c  = font_fg();   // list item text follows the Font Color setting
     // Right edge: leave room for scrollbar (6px) + arrow (14px) + small gap
     int16_t  max_x = (int16_t)scrW() - (has_arrow ? 28 : 8);
     int16_t  ty    = y_px + (itemH() - 16) / 2;
@@ -957,6 +967,18 @@ void BibleInterface::loadReadingFont() {
     if (read_font_loaded == (int8_t)idx) return;
     line_spr.loadFont(VLW_FONTS[idx].data);   // unloads any previous font first
     read_font_loaded = (int8_t)idx;
+}
+
+// Load a smooth VLW size onto tft for the whole UI. While a font is loaded every
+// TFT_eSPI text call (drawString/drawCentreString/drawChar/textWidth) renders with
+// it, so menus, headers, nav, buttons and the keyboard all use the smooth font and
+// its native umlaut glyphs. Big elements bump to a larger size and restore.
+void BibleInterface::setUiFont(uint8_t idx) {
+    if (idx >= VLW_FONT_COUNT) idx = 2;
+    if (ui_font_idx == (int8_t)idx) return;
+    tft.loadFont(VLW_FONTS[idx].data);
+    g_ui_vlw   = VLW_FONTS[idx].data;
+    ui_font_idx = (int8_t)idx;
 }
 
 void BibleInterface::drawReadingLines() {
@@ -2455,7 +2477,9 @@ void BibleInterface::drawAbout() {
 
     // App name + version + author (centred, prominent).
     tft.setTextColor(fg(), bg());
+    setUiFont(4);                             // larger smooth font for the app name
     tft.drawCentreString(BIBLE_FW_NAME, cx, y, 4);
+    setUiFont(2);
     y += 34;
     char vbuf[40];
     snprintf(vbuf, sizeof(vbuf), "Version %s", BIBLE_FW_VERSION);
@@ -2833,6 +2857,8 @@ void BibleInterface::goToMainMenu() {
     accent_def = (prefs.getUChar("accentdef", 0) != 0);
     font_num   = 3;   // default reading size = Medium (VLW index)
     loadMenuChrome();
+    font_color_idx = menu_font_color_idx;   // chrome/menu text follows the menu Font Color
+    if (font_color_idx >= FONT_COLOR_COUNT) font_color_idx = 0;
     // Keep the current backlight level (avoids a brightness flash when returning
     // from a mode); each mode still applies its own brightness on entry.
     freeRuntime();
@@ -2858,21 +2884,25 @@ void BibleInterface::drawMainMenu() {
     int16_t top   = (int16_t)contentY() + 12;
     int16_t avail = (int16_t)scrH() - top - 12;
     int16_t bh    = (avail - sh - gap * 3) / 3;
+    setUiFont(4);                              // larger smooth font for the mode buttons
+    int16_t lblH = (int16_t)VLW_FONTS[4].lineH;
     for (uint8_t i = 0; i < 3; i++) {
         int16_t y = top + i * (bh + gap);
         tft.fillRoundRect(margin, y, scrW() - 2 * margin, bh, 12, btn_bg);
         tft.drawRoundRect(margin, y, scrW() - 2 * margin, bh, 12, edgeColor(i * 3, dim_fg()));
         tft.setTextColor(chromeFg(), btn_bg);
-        tft.drawCentreString(MENU_LABELS[i], scrW() / 2, y + (bh - 26) / 2, 4);
+        tft.drawCentreString(MENU_LABELS[i], scrW() / 2, y + (bh - lblH) / 2, 4);
     }
+    setUiFont(2);                              // restore the normal UI size
     // Smaller Settings button under Dictionary.
     int16_t sy = top + 3 * (bh + gap);
     int16_t sw = (int16_t)((scrW() - 2 * margin) * 7 / 10);
     int16_t sx = ((int16_t)scrW() - sw) / 2;
+    int16_t uiH = (int16_t)VLW_FONTS[2].lineH;
     tft.fillRoundRect(sx, sy, sw, sh, 10, hdr_bg());
     tft.drawRoundRect(sx, sy, sw, sh, 10, edgeColor(9, dim_fg()));
     tft.setTextColor(chromeFg(), hdr_bg());
-    tft.drawCentreString("Settings", scrW() / 2, sy + (sh - 16) / 2, 2);
+    tft.drawCentreString("Settings", scrW() / 2, sy + (sh - uiH) / 2, 2);
 }
 
 void BibleInterface::handleMainMenuInput() {
@@ -3424,42 +3454,9 @@ void BibleInterface::utf8Encode(char* buf) {
     *w = 0;
 }
 
-// Measure pixel width of a string that may contain private codes 0x80-0x86.
-// Substitutes the base letter for measurement (widths are nearly identical).
-int16_t BibleInterface::textWidthUTF8(const char* str, uint8_t font) {
-    static const char bases[] = {'A','a','O','o','U','u'};
-    char tmp[BIBLE_LINE_BUF];
-    size_t j = 0;
-    for (const char* p = str; *p && j < BIBLE_LINE_BUF - 1; p++) {
-        uint8_t c = (uint8_t)*p;
-        if      (c >= 0x80 && c <= 0x85) tmp[j++] = bases[c - 0x80];
-        else if (c == 0x86)               tmp[j++] = 'B';  // ß ≈ B width
-        else                              tmp[j++] = *p;
-    }
-    tmp[j] = 0;
-    return tft.textWidth(tmp, font);
-}
-
-// Draw a string that may contain private codes 0x80-0x86.
-// Umlauts (0x80-0x85): base letter + two diaeresis dots via bibleDrawUmlautDots().
-// ß (0x86): pixel-drawn glyph via bibleDrawSzlig().
-void BibleInterface::drawStringUTF8(TFT_eSprite& spr, const char* str, int16_t x, int16_t y,
-                                     uint8_t font, uint16_t color) {
-    static const char bases[] = {'A','a','O','o','U','u'};
-
-    for (const char* p = str; *p; p++) {
-        uint8_t c = (uint8_t)*p;
-        if (c == 0x86) {
-            x += bibleDrawSzlig(spr, x, y, font, color);
-        } else if (c >= 0x80 && c <= 0x85) {
-            int16_t w    = spr.drawChar((uint16_t)bases[c - 0x80], x, y, font);
-            bool is_lower = ((c - 0x80) & 1) != 0;  // 0x81/0x83/0x85 = ä/ö/ü
-            bibleDrawUmlautDots(spr, x, y, w, is_lower, font, color);
-            x += w;
-        } else {
-            x += spr.drawChar((uint16_t)(uint8_t)*p, x, y, font);
-        }
-    }
+// Measure pixel width of a private-code string in the loaded UI VLW font.
+int16_t BibleInterface::textWidthUTF8(const char* str, uint8_t /*font*/) {
+    return vlwTextWidth(g_ui_vlw, str);
 }
 
 // Render ß (private code 0x86) as a pixel-drawn glyph matching each font size.
@@ -3490,11 +3487,6 @@ void BibleInterface::drawStringUTF8(TFT_eSprite& spr, const char* str, int16_t x
 //   Font 4 (Font32 26px) — 13-col canvas, advance 13
 //     Smooth curved ß: 2px-wide left stem (cols 1-2, rows 5-17),
 //     rounded upper loop, rounded lower lobe, curved bottom tail.
-int16_t BibleInterface::drawSzlig(TFT_eSprite& spr, int16_t x, int16_t y,
-                                   uint8_t font, uint16_t color) {
-    return bibleDrawSzlig(spr, x, y, font, color);
-}
-
 // Extract attribute value from a tag string like:  verse osisID="Gen.1.1"
 bool BibleInterface::xmlGetAttr(const char* tag, const char* attr, char* out, size_t out_len) {
     const char* p = strstr(tag, attr);

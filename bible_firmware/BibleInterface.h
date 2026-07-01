@@ -173,6 +173,7 @@ private:
     TFT_eSPI    tft;
     TFT_eSprite line_spr;   // per-line off-screen buffer for flicker-free reading scroll
     int8_t      read_font_loaded;  // VLW size index currently loaded in line_spr (-1 = none)
+    int8_t      ui_font_idx;       // VLW size index currently loaded on tft for the UI (-1 = none)
 
     // ── Navigation position ───────────────────────────────────────────────
     uint8_t  cur_sec;
@@ -367,6 +368,7 @@ private:
     void drawScrollBar(int16_t total, int16_t vis, int16_t top);
     void drawReadingLines();
     void loadReadingFont();   // (re)load the VLW font for font_num into line_spr
+    void setUiFont(uint8_t idx);  // load a UI VLW size onto tft (menus/chrome/keyboard)
 
     // ── Colors ────────────────────────────────────────────────────────────
     uint16_t fg()      const;
@@ -427,13 +429,7 @@ private:
     // Code 0x86 is the private placeholder for ß (pixel-drawn glyph).
     // All stored in verse_buf and lines[].
     void     utf8Encode(char* buf);             // compress 2-byte UTF-8 umlauts → private codes
-    int16_t  textWidthUTF8(const char* s, uint8_t font); // width-measure aware of private codes
-    // Draw into a sprite (or tft treated as sprite-compatible target).
-    // TFT_eSprite& required (not TFT_eSPI&) so non-virtual overrides dispatch correctly.
-    void     drawStringUTF8(TFT_eSprite& spr, const char* s, int16_t x, int16_t y,
-                             uint8_t font, uint16_t color); // draw with dot-diaeresis overlay
-    int16_t  drawSzlig(TFT_eSprite& spr, int16_t x, int16_t y,
-                       uint8_t font, uint16_t color); // pixel ß glyph
+    int16_t  textWidthUTF8(const char* s, uint8_t font); // width-measure (loaded UI VLW font)
 
     void  recordVel(int16_t y, uint32_t t);    // push sample into velocity ring buffer
     float computeFlingVel() const;              // px/s from last samples at lift

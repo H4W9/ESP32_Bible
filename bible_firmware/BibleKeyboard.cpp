@@ -4,7 +4,6 @@
 // German chars output private byte codes 0x80-0x86 (same as verse storage).
 
 #include "BibleKeyboard.h"
-#include "BibleDrawUTF8.h"
 
 #ifdef HAS_TOUCH
 
@@ -82,29 +81,37 @@ static bool kb_rawTouch(TFT_eSPI& tft, uint16_t* x, uint16_t* y) {
 // Drawing helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
-// Draw umlaut key label using font 2: base letter + 1×1 diaeresis dots.
-// Dots via bibleDrawUmlautDots() — same formula as drawStringUTF8() font 2.
+// UTF-8 encode a Latin-1 code point (0x80..0xFF → 2 bytes) into a 3-byte buffer.
+static void kbUtf8(uint16_t uni, char out[3]) {
+    if (uni < 0x80) { out[0] = (char)uni; out[1] = 0; }
+    else { out[0] = (char)(0xC0 | (uni >> 6)); out[1] = (char)(0x80 | (uni & 0x3F)); out[2] = 0; }
+}
+
+// Draw an umlaut key label — the real glyph from the loaded smooth UI font (which
+// includes Ä ä Ö ö Ü ü natively), mapped from the base letter.
 static void drawUmlautLabel(TFT_eSPI& tft,
                              int16_t kx, int16_t ky, int16_t cw, int16_t ch,
                              char base, uint16_t key_fg, uint16_t key_bg) {
-    int16_t ty    = ky + (ch - 16) / 2;  // top of 16px cell, vertically centred
-    char    c_str[2] = { base, '\0' };
+    uint16_t uni;
+    switch (base) {
+        case 'A': uni = 0xC4; break; case 'a': uni = 0xE4; break;
+        case 'O': uni = 0xD6; break; case 'o': uni = 0xF6; break;
+        case 'U': uni = 0xDC; break; default:  uni = 0xFC; break;   // u/U
+    }
+    char u8[3]; kbUtf8(uni, u8);
+    int16_t ty = ky + (ch - 16) / 2;
     tft.setTextColor(key_fg, key_bg);
-    tft.drawCentreString(c_str, kx + cw / 2, ty, 2);
-
-    int16_t adv    = (int16_t)tft.textWidth(c_str, 2);
-    int16_t char_x = (kx + cw / 2) - adv / 2;  // left edge of centred character
-    bool    is_lower = (base >= 'a' && base <= 'z');
-    bibleDrawUmlautDots(tft, char_x, ty, adv, is_lower, 2, key_fg);
+    tft.drawCentreString(u8, kx + cw / 2, ty, 2);
 }
 
-// Draw ß key label — font-2 pixel glyph via bibleDrawSzlig().
+// Draw the ß key label — real glyph (U+00DF) from the loaded smooth UI font.
 static void drawSzligLabel(TFT_eSPI& tft,
                             int16_t kx, int16_t ky, int16_t cw, int16_t ch,
-                            uint16_t key_fg) {
-    int16_t x = kx + (cw - 7) / 2;   // center the 7-px-wide glyph in the key cell
-    int16_t y = ky + (ch - 16) / 2;  // top of 16-px cell, vertically centred
-    bibleDrawSzlig(tft, x, y, 2, key_fg);
+                            uint16_t key_fg, uint16_t key_bg) {
+    char u8[3]; kbUtf8(0xDF, u8);
+    int16_t ty = ky + (ch - 16) / 2;
+    tft.setTextColor(key_fg, key_bg);
+    tft.drawCentreString(u8, kx + cw / 2, ty, 2);
 }
 
 // Draw the options strip (three rows between text area and keyboard).
@@ -172,9 +179,8 @@ static void drawOptions(TFT_eSPI& tft, uint16_t fg, uint16_t bg,
 }
 
 // Draw the text area (top half of screen minus options strip): title + current buffer.
-// German private codes 0x80-0x85 (Ä ä Ö ö Ü ü) are rendered as the base
-// letter in font 2 with 1×1 diaeresis dots via bibleDrawUmlautDots().
-// Code 0x86 (ß) is rendered with a custom pixel glyph via bibleDrawSzlig().
+// German private codes 0x80-0x86 are mapped to their real Unicode glyphs and drawn
+// with the loaded smooth UI font (which includes Ä ä Ö ö Ü ü ß).
 static void drawTextArea(TFT_eSPI& tft, uint16_t fg, uint16_t bg,
                           uint16_t scrW, uint16_t scrH,
                           const char* title, const char* buffer,
@@ -192,22 +198,22 @@ static void drawTextArea(TFT_eSPI& tft, uint16_t fg, uint16_t bg,
     }
 
     tft.setTextColor(fg, bg);
-    int16_t x = 4;
+    // Draw the buffer with the loaded smooth UI font. Private umlaut codes map to
+    // their real Unicode glyph; drawGlyph advances the cursor for us.
+    tft.setCursor(4, y);
     const char* p = buffer ? buffer : "";
-    for (; *p && x < (int16_t)scrW - 10; p++) {
+    for (; *p && tft.getCursorX() < (int16_t)scrW - 10; p++) {
         uint8_t c = (uint8_t)*p;
-        if (c >= 0x80 && c <= 0x85) {
-            static const char ubases[] = { 'A','a','O','o','U','u' };
-            bool    is_lower = ((c - 0x80) & 1) != 0;  // odd codes = ä,ö,ü
-            int16_t adv      = tft.drawChar((uint16_t)(uint8_t)ubases[c - 0x80], x, y, 2);
-            bibleDrawUmlautDots(tft, x, y, adv, is_lower, 2, fg);
-            x += adv;
-        } else if (c == 0x86) {
-            x += (int16_t)bibleDrawSzlig(tft, x, y, 2, fg);
-        } else {
-            x += tft.drawChar((uint16_t)(uint8_t)c, x, y, 2);
+        uint16_t uni;
+        switch (c) {
+            case 0x80: uni = 0xC4; break; case 0x81: uni = 0xE4; break;
+            case 0x82: uni = 0xD6; break; case 0x83: uni = 0xF6; break;
+            case 0x84: uni = 0xDC; break; case 0x85: uni = 0xFC; break;
+            case 0x86: uni = 0xDF; break; default:   uni = c;    break;
         }
+        tft.drawGlyph(uni);
     }
+    int16_t x = tft.getCursorX();
     // Blinking cursor bar
     tft.fillRect(x, y, 2, 18, fg);
 }
@@ -304,7 +310,7 @@ static void drawKeyboard(TFT_eSPI& tft, uint16_t fg, uint16_t bg,
 
     // Col 5: ß (no uppercase form)
     tft.drawRect(5*cW, rowY, cW, cH, bdr);
-    drawSzligLabel(tft, 5*cW, rowY, cW, cH, key_fg);
+    drawSzligLabel(tft, 5*cW, rowY, cW, cH, key_fg, key_bg);
 
     // Cols 6-7: SPACE (double-wide) — font 2
     tft.fillRect(6*cW, rowY, 2*cW, cH, key_bg);
