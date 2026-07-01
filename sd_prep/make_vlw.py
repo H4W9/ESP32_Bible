@@ -15,7 +15,7 @@ it from its own spaceWidth guess, so a space glyph would just be ignored.
 Usage:
   pip install freetype-py
   python make_vlw.py "C:/Windows/Fonts/DejaVuSans.ttf" \
-      --sizes 14,18,22,28 --out ../bible_firmware/fonts_vlw.h
+      --sizes 10,12,14,18,22,28 --out ../bible_firmware/fonts_vlw.h
 
 Produces one array per size (e.g. vlw_14[], vlw_18[], …) in a single header,
 plus a VLW_FONTS[] table {ptr, px} the firmware can index.
@@ -107,8 +107,8 @@ def emit_array(fh, name, blob):
 def main():
     ap = argparse.ArgumentParser(description="TTF → TFT_eSPI .vlw flash arrays.")
     ap.add_argument("ttf", help="source TrueType font (needs German umlaut glyphs)")
-    ap.add_argument("--sizes", default="14,18,22,28",
-                    help="comma-separated pixel sizes (default 14,18,22,28)")
+    ap.add_argument("--sizes", default="10,12,14,18,22,28",
+                    help="comma-separated pixel sizes (default 10,12,14,18,22,28)")
     ap.add_argument("--out", default="fonts_vlw.h", help="output C header path")
     args = ap.parse_args()
 

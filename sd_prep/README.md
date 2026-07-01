@@ -252,12 +252,14 @@ umlauts (ä ö ü Ä Ö Ü ß), e.g. DejaVuSans:
 
 ```cmd
 pip install freetype-py
-python make_vlw.py "C:\Windows\Fonts\DejaVuSans.ttf" --sizes 14,18,22,28 --out ..\bible_firmware\fonts_vlw.h
+python make_vlw.py "C:\Windows\Fonts\DejaVuSans.ttf" --sizes 10,12,14,18,22,28 --out ..\bible_firmware\fonts_vlw.h
 ```
 
 This writes `bible_firmware/fonts_vlw.h` (one `vlw_<px>[]` array per size plus a
-`VLW_FONTS[]` table). The four sizes map to the Settings → Font Size options
-Small / Medium / Large / X-Large. Rebuild the firmware after regenerating.
+`VLW_FONTS[]` table). The six sizes map, in order, to the Settings → Font Size
+options Tiny / X-Small / Small / Medium / Large / X-Large (index 3 = Medium is the
+default). If you change the count or order, update `SZ_NAMES[]` and the default
+index in `BibleInterface.cpp`. Rebuild the firmware after regenerating.
 
 ## Final SD card layout
 

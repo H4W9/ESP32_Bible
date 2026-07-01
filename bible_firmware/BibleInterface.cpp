@@ -293,7 +293,7 @@ BibleInterface::BibleInterface()
     : cur_sec(0), cur_book(0), cur_chapter(1), cur_trans(0),
       mode(MODE_BIBLE), rt_books(nullptr), rt_book_count(0),
       rt_secs(nullptr), rt_sec_count(0), rt_pages(nullptr), rt_page_count(0), rt_pages_book(0xFFFF),
-      view(BV_MAIN_MENU), dark_mode(true), theme_idx(0), font_num(1), font_color_idx(0),
+      view(BV_MAIN_MENU), dark_mode(true), theme_idx(0), font_num(3), font_color_idx(0),
       vnum_color_idx(0), orientation(0), menu_font_color_idx(0), accent_def(false), needs_redraw(true),
       settings_scope(0), settings_from_menu(false), set_row_n(0),
       sc_trans_count(0), sc_trans_cur(0),
@@ -356,7 +356,7 @@ void BibleInterface::RunSetup() {
     accent_idx = prefs.getUChar("accent", 0);
     if (accent_idx >= ACCENT_COUNT) accent_idx = 0;
     accent_def = (prefs.getUChar("accentdef", 0) != 0);
-    font_num   = 1;   // default reading size = Medium (VLW index)
+    font_num   = 3;   // default reading size = Medium (VLW index)
     loadMenuChrome();   // global chrome text colour
     blInit();   // must run before runTouchCalibration() so the backlight is on
 
@@ -508,7 +508,7 @@ uint16_t BibleInterface::scrH() const {
 uint16_t BibleInterface::lineH() const {
     // Reading text is drawn with a smooth VLW font; the row height is the font's
     // ascent+descent plus a little leading. font_num is the VLW size index (0..3).
-    uint8_t idx = (font_num < VLW_FONT_COUNT) ? font_num : 1;
+    uint8_t idx = (font_num < VLW_FONT_COUNT) ? font_num : 3;
     return (uint16_t)VLW_FONTS[idx].lineH + 3;
 }
 uint8_t BibleInterface::visItems() const { return contentH() / itemH(); }
@@ -708,7 +708,7 @@ static void vlwPrivToUtf8(const char* in, char* out, size_t n) {
 }
 // The VLW font array for the current reading size index (font_num), clamped.
 static const uint8_t* vlwForSize(uint8_t idx) {
-    if (idx >= VLW_FONT_COUNT) idx = 1;
+    if (idx >= VLW_FONT_COUNT) idx = 3;
     return VLW_FONTS[idx].data;
 }
 
@@ -953,7 +953,7 @@ void BibleInterface::drawChapterSelect() {
 // loaded font persists across createSprite/deleteSprite (only the destructor
 // unloads it), so this only does real work when the size actually changes.
 void BibleInterface::loadReadingFont() {
-    uint8_t idx = (font_num < VLW_FONT_COUNT) ? font_num : 1;
+    uint8_t idx = (font_num < VLW_FONT_COUNT) ? font_num : 3;
     if (read_font_loaded == (int8_t)idx) return;
     line_spr.loadFont(VLW_FONTS[idx].data);   // unloads any previous font first
     read_font_loaded = (int8_t)idx;
@@ -1166,13 +1166,13 @@ void BibleInterface::loadScopeSettings() {
     theme_idx      = ok ? p.getUChar("theme",    0) : 0;
     accent_idx     = ok ? p.getUChar("accent",   0) : 0;
     accent_def     = ok ? (p.getUChar("accentdef", 0) != 0) : false;
-    font_num       = ok ? p.getUChar("font",     1) : 1;
+    font_num       = ok ? p.getUChar("font",     3) : 3;
     font_color_idx = ok ? p.getUChar("fontcol",  0) : 0;
     vnum_color_idx = ok ? p.getUChar("vnumcol",  0) : 0;
     if (ok) p.end();
     if (theme_idx      >= THEME_COUNT)      theme_idx = 0;
     if (accent_idx     >= ACCENT_COUNT)     accent_idx = 0;
-    if (font_num >= VLW_FONT_COUNT) font_num = 1;   // VLW reading-size index (0..3)
+    if (font_num >= VLW_FONT_COUNT) font_num = 3;   // VLW reading-size index; 3 = Medium
     if (font_color_idx >= FONT_COLOR_COUNT) font_color_idx = 0;
     if (vnum_color_idx >= FONT_COLOR_COUNT) vnum_color_idx = 0;
     dark_mode = THEMES[theme_idx].dark;
@@ -1353,8 +1353,9 @@ void BibleInterface::redrawSettingsContent() {
                 break;
             }
             case SR_FONTSIZE: {
-                static const char* const SZ_NAMES[4] = { "Small", "Medium", "Large", "X-Large" };
-                uint8_t si = (font_num < VLW_FONT_COUNT && font_num < 4) ? font_num : 1;
+                static const char* const SZ_NAMES[6] = { "Tiny", "X-Small", "Small",
+                                                         "Medium", "Large", "X-Large" };
+                uint8_t si = (font_num < VLW_FONT_COUNT && font_num < 6) ? font_num : 3;
                 choiceRow(row_y, "Font Size", SZ_NAMES[si], sel, 0);
                 break;
             }
@@ -2052,7 +2053,7 @@ void BibleInterface::handleSettingsInput() {
                 redrawSettingsContent();
                 break;
             case SR_FONTSIZE:
-                if (font_num >= VLW_FONT_COUNT) font_num = 1;
+                if (font_num >= VLW_FONT_COUNT) font_num = 3;
                 font_num = fwd ? (uint8_t)((font_num + 1) % VLW_FONT_COUNT)
                                : (uint8_t)(font_num == 0 ? VLW_FONT_COUNT - 1 : font_num - 1);
                 writeScoped("font", font_num);
@@ -2830,7 +2831,7 @@ void BibleInterface::goToMainMenu() {
     accent_idx = prefs.getUChar("accent", 0);
     if (accent_idx >= ACCENT_COUNT) accent_idx = 0;
     accent_def = (prefs.getUChar("accentdef", 0) != 0);
-    font_num   = 1;   // default reading size = Medium (VLW index)
+    font_num   = 3;   // default reading size = Medium (VLW index)
     loadMenuChrome();
     // Keep the current backlight level (avoids a brightness flash when returning
     // from a mode); each mode still applies its own brightness on entry.
@@ -3835,7 +3836,7 @@ void BibleInterface::loadState() {
     cur_book          = prefs.getUShort("book",     0);
     cur_chapter       = prefs.getUShort("chap",     1);
     cur_trans         = prefs.getUChar("trans",     0);
-    font_num          = prefs.getUChar("font",      1);
+    font_num          = prefs.getUChar("font",      3);
     font_color_idx    = prefs.getUChar("fontcol",   0);
     if (font_color_idx >= FONT_COLOR_COUNT) font_color_idx = 0;
     vnum_color_idx    = prefs.getUChar("vnumcol",   0);
@@ -3853,7 +3854,7 @@ void BibleInterface::loadState() {
     if (mode == MODE_BIBLE && cur_book >= BIBLE_BOOK_COUNT) cur_book = 0;
     if (cur_chapter == 0)               cur_chapter = 1;
     if (cur_trans  >= BIBLE_MAX_TRANS)  cur_trans  = 0;
-    if (font_num >= VLW_FONT_COUNT) font_num = 1;   // VLW reading-size index (0..3)
+    if (font_num >= VLW_FONT_COUNT) font_num = 3;   // VLW reading-size index; 3 = Medium
     if (accent_idx >= ACCENT_COUNT)     accent_idx = 0;
     if (srch_scope >= 3)                srch_scope  = 0;
     // Derive section from book so navigation back shows correct highlight.
