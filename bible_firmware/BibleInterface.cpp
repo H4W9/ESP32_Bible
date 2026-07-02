@@ -4495,41 +4495,22 @@ void BibleInterface::drawSearchResultRow(int16_t y_px, uint16_t idx, bool sel) {
     tft.setTextDatum(TL_DATUM);
     setUiFont(0);                          // Tiny for the snippet (one size smaller)
     const int16_t tiny_lh = (int16_t)VLW_FONTS[0].lineH;
-    int16_t sx     = PADDING;
-    int16_t max_sx = row_w - PADDING;
-    int16_t cur_y  = snip_y;
-    uint8_t sline  = 0;                     // which snippet line (0 or 1)
-    size_t  si     = 0;
+    const size_t  slen    = strlen(disp);  // disp and snip share indices (1 byte each)
 
-    // Draw one snippet char, wrapping to a 2nd line when the first fills.
-    // Returns false when both lines are used up.
-    auto snipChar = [&](uint8_t ch, uint16_t color) -> bool {
-        if (sx >= max_sx) {
-            if (sline == 0) { sline = 1; sx = PADDING; cur_y = snip_y + tiny_lh; }
-            else return false;
-        }
-        tft.setTextColor(color, bg_col);
-        sx += tftCharUTF8(tft, ch, sx, cur_y, 1, color);
-        return true;
-    };
-
-    bool room = true;
-    while (disp[si] && room) {
-        // Try each token at position si; take the first match.
+    // Pass 1: mark which snippet characters fall inside a matched token.
+    bool hl[BIBLE_SRCH_SNIPPET_LEN];
+    memset(hl, 0, sizeof(hl));
+    for (size_t si = 0; si < slen; ) {
         bool   found     = false;
         size_t match_end = 0;
-
         for (int t = 0; t < ntokens && !found; t++) {
             const char* tok = tokens[t].s;
             size_t      tl  = tokens[t].len;
             if (tl == 0) continue;
-
             if (srch_ignore_punct) {
-                // Skip punct in disp while consuming token chars
                 size_t qi = 0, di = si;
                 while (qi < tl) {
-                    while (disp[di] && (uint8_t)disp[di] < 0x80 && ispunct((int)(uint8_t)disp[di]))
-                        di++;
+                    while (disp[di] && (uint8_t)disp[di] < 0x80 && ispunct((int)(uint8_t)disp[di])) di++;
                     if (!disp[di]) break;
                     if (tolower((uint8_t)disp[di]) != tolower((uint8_t)tok[qi])) break;
                     di++; qi++;
@@ -4537,24 +4518,54 @@ void BibleInterface::drawSearchResultRow(int16_t y_px, uint16_t idx, bool sel) {
                 if (qi == tl) { found = true; match_end = di; }
             } else {
                 bool m = true;
-                for (size_t j = 0; j < tl && m; j++) {
-                    if (!disp[si + j] ||
-                        tolower((uint8_t)disp[si + j]) != tolower((uint8_t)tok[j]))
-                        m = false;
-                }
+                for (size_t j = 0; j < tl && m; j++)
+                    if (!disp[si + j] || tolower((uint8_t)disp[si + j]) != tolower((uint8_t)tok[j])) m = false;
                 if (m) { found = true; match_end = si + tl; }
             }
         }
+        if (found) { for (size_t j = si; j < match_end && j < slen; j++) hl[j] = true; si = match_end; }
+        else si++;
+    }
 
-        if (found) {
-            for (size_t j = si; j < match_end; j++)
-                if (!snipChar((uint8_t)snip[j], (uint16_t)0xFD20)) { room = false; break; }
-            si = match_end;
-        } else {
-            uint16_t text_color = sel ? fg() : dim_fg();
-            if (!snipChar((uint8_t)snip[si], text_color)) room = false;
-            si++;
+    // Character advance in the loaded Tiny font.
+    auto charAdv = [&](uint8_t c) -> int16_t {
+        if (c == ' ') return vlwSpaceWidth(g_ui_vlw);
+        int16_t a = vlwAdvance(g_ui_vlw, vlwPrivToUnicode(c));
+        return (a < 0) ? (int16_t)(vlwSpaceWidth(g_ui_vlw) + 1) : a;
+    };
+
+    // Pass 2: word-wrap over two lines. max_sx already excludes the scrollbar, so
+    // words break before it. A word wider than a line falls back to char breaks.
+    int16_t sx     = PADDING;
+    int16_t max_sx = row_w - PADDING;
+    int16_t cur_y  = snip_y;
+    uint8_t sline  = 0;
+    const uint16_t norm_col = sel ? fg() : dim_fg();
+    for (size_t i = 0; i < slen; ) {
+        size_t ws = i;
+        while (i < slen && snip[i] != ' ') i++;   // word
+        size_t we = i;
+        while (i < slen && snip[i] == ' ') i++;   // trailing spaces
+        int16_t word_w = 0;
+        for (size_t k = ws; k < we; k++) word_w += charAdv((uint8_t)snip[k]);
+        if (sx > PADDING && sx + word_w > max_sx) {           // whole word won't fit → wrap
+            if (sline == 0) { sline = 1; sx = PADDING; cur_y = snip_y + tiny_lh; }
+            else break;
         }
+        bool stop = false;
+        for (size_t k = ws; k < we && !stop; k++) {           // draw word (char-wrap if huge)
+            int16_t cw = charAdv((uint8_t)snip[k]);
+            if (sx + cw > max_sx) {
+                if (sline == 0) { sline = 1; sx = PADDING; cur_y = snip_y + tiny_lh; }
+                else { stop = true; break; }
+            }
+            uint16_t col = hl[k] ? (uint16_t)0xFD20 : norm_col;
+            tft.setTextColor(col, bg_col);
+            sx += tftCharUTF8(tft, (uint8_t)snip[k], sx, cur_y, 1, col);
+        }
+        if (stop) break;
+        for (size_t k = we; k < i && sx > PADDING; k++)       // advance past spaces (no draw)
+            sx += charAdv((uint8_t)snip[k]);
     }
     setUiFont(1);   // restore X-Small for the next row's reference line
 }

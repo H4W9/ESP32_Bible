@@ -55,7 +55,7 @@
 #define DICT_PAGE_LABEL_LEN 56    // "firstword - lastword" page label (Dictionary)
 #define BIBLE_SEARCH_QUERY_LEN  48    // max query length incl null
 #define BIBLE_SEARCH_HIST_MAX   10    // max history entries
-#define BIBLE_SRCH_SNIPPET_LEN   80   // max snippet bytes per result (incl null)
+#define BIBLE_SRCH_SNIPPET_LEN   140  // max snippet bytes per result (fills ~2 lines)
 #ifdef HAS_PSRAM
 #  define BIBLE_MAX_SEARCH_RESULTS 200
 #else
