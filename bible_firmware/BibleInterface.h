@@ -479,7 +479,7 @@ private:
     // Handles the mode-specific option row (Bible scope / Songs Find / Dict picker).
     bool openSearchKeyboard();
     bool searchBible(const char* query);
-    void searchSongsAll(const char* query);  // Songs "All": body scan across every songbook
+    bool searchSongsAll(const char* query);  // Songs "All" body scan; false if cancelled
     void jumpToSearchResult(uint16_t idx);
     bool searchContains(const char* text, const char* query);
     bool touchInSearchIcon(uint16_t x, uint16_t y);

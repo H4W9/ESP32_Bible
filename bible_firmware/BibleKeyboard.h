@@ -57,11 +57,13 @@ bool bibleKeyboardInput(TFT_eSPI& tft,
                         const char*        scope_label = nullptr,
                         const char* const* scope_opts  = nullptr,
                         uint8_t            scope_count = 0,
-                        // Dictionary mode: replaces the choice row with a "Dict:"
-                        // selector. Tapping the row cycles *dict_sel through
-                        // dict_names[0..dict_count-1]. (scope should be nullptr then.)
+                        // Translation/songbook/dictionary picker row: a "Label: < name >"
+                        // selector. Tapping it cycles *dict_sel through
+                        // dict_names[0..dict_count-1] (shown only when dict_count > 1).
+                        // Works alongside the scope row for Bible/Songs, or alone for Dict.
                         const char* const* dict_names = nullptr,
                         uint8_t            dict_count = 0,
-                        uint8_t*           dict_sel   = nullptr);
+                        uint8_t*           dict_sel   = nullptr,
+                        const char*        dict_label = nullptr);  // e.g. "Trans:" / "Book:" / "Dict:"
 
 #endif // HAS_TOUCH

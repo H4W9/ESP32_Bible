@@ -5098,42 +5098,55 @@ bool BibleInterface::openSearchKeyboard() {
     const char* kb_title = (mode == MODE_SONGS) ? "Search Songs:"
                          : (mode == MODE_DICT)  ? "Search word:"
                                                 : "Search Bible:";
+    // Translation / songbook / dictionary picker (shown when there are 2+ files):
+    // tap it to switch which one is searched. Use each file's real display name
+    // (from the .toc, umlauts included) converted from private codes to UTF-8 so
+    // the keyboard's smooth-font drawString renders the umlaut glyphs.
+    char names_buf[BIBLE_MAX_TRANS][BIBLE_TRANS_DISP_LEN * 2];  // UTF-8 ≈ up to 2×
+    const char* names[BIBLE_MAX_TRANS];
+    for (uint8_t i = 0; i < trans_count; i++) {
+        vlwPrivToUtf8(trans_names[i], names_buf[i], sizeof(names_buf[i]));
+        names[i] = names_buf[i];
+    }
+    const char* pick_label = (mode == MODE_SONGS) ? "Book:"
+                           : (mode == MODE_DICT)  ? "Dict:" : "Trans:";
+    uint8_t dsel = cur_trans;
+
     bool ok;
     if (mode == MODE_DICT) {
-        // Dictionary auto-scopes to the query's letter bucket, so the choice row
-        // becomes a "Dict:" selector (tap to switch which dictionary is searched).
-        char up[BIBLE_MAX_TRANS][BIBLE_TRANS_LEN];
-        const char* names[BIBLE_MAX_TRANS];
-        for (uint8_t i = 0; i < trans_count; i++) {
-            strncpy(up[i], trans_stems[i], BIBLE_TRANS_LEN - 1);
-            up[i][BIBLE_TRANS_LEN - 1] = 0;
-            for (char* p = up[i]; *p; ++p) *p = (char)toupper((unsigned char)*p);
-            names[i] = up[i];
-        }
-        uint8_t dsel = cur_trans;
+        // Dictionary auto-scopes to the query's letter bucket (no scope row).
         ok = bibleKeyboardInput(tft, fg(), bg(), search_query, BIBLE_SEARCH_QUERY_LEN,
                                 kb_title, &srch_partial_match, &srch_ignore_punct,
                                 nullptr, nullptr, nullptr, 0,
-                                names, trans_count, &dsel);
-        if (dsel != cur_trans && dsel < trans_count) {
-            cur_trans = dsel;
-            prefs.putUChar("trans", cur_trans);
-            loadToc(trans_stems[cur_trans]);
-            cached_book = 0xFFFF; cached_chap = 0; cached_count = 0;
-            if (cur_book >= numBooks()) cur_book = 0;
-            cur_sec = (numBooks() > 0) ? bookSection(cur_book) : 0;
-        }
+                                names, trans_count, &dsel, pick_label);
     } else if (mode == MODE_SONGS) {
-        // Songs: choice row selects scope — All songbooks / Title / Body.
         static const char* const FIND[3] = { "All", "Title", "Body" };
         if (srch_scope > 2) srch_scope = 0;
         ok = bibleKeyboardInput(tft, fg(), bg(), search_query, BIBLE_SEARCH_QUERY_LEN,
                                 kb_title, &srch_partial_match, &srch_ignore_punct,
-                                &srch_scope, "Find:", FIND, 3);
-    } else {
+                                &srch_scope, "Find:", FIND, 3,
+                                names, trans_count, &dsel, pick_label);
+    } else {  // Bible — default scope row (Bible / Section / Book) + translation picker
         ok = bibleKeyboardInput(tft, fg(), bg(), search_query, BIBLE_SEARCH_QUERY_LEN,
                                 kb_title, &srch_partial_match, &srch_ignore_punct,
-                                &srch_scope);
+                                &srch_scope, nullptr, nullptr, 0,
+                                names, trans_count, &dsel, pick_label);
+    }
+
+    // Apply a translation switch made in the picker (any mode).
+    if (dsel != cur_trans && dsel < trans_count) {
+        cur_trans = dsel;
+        prefs.putUChar("trans", cur_trans);
+        cached_book = 0xFFFF; cached_chap = 0; cached_count = 0;
+        book_idx_valid = false;
+        if (mode != MODE_BIBLE) {
+            loadToc(trans_stems[cur_trans]);
+            if (cur_book >= numBooks()) cur_book = 0;
+            cur_sec = (numBooks() > 0) ? bookSection(cur_book) : 0;
+        } else if (cur_book >= numBooks()) {
+            cur_book = 0;
+            cur_sec  = bookSection(cur_book);
+        }
     }
     // Persist option changes the user made inside the keyboard.
     prefs.putBool ("srch_part", srch_partial_match);
@@ -5152,10 +5165,8 @@ bool BibleInterface::searchBible(const char* query) {
     if (trans_count == 0 || !query || !query[0]) return false;
 
     // Songs "All": body scan across every songbook (handled in its own method).
-    if (mode == MODE_SONGS && srch_scope == 0) {
-        searchSongsAll(query);
-        return true;
-    }
+    if (mode == MODE_SONGS && srch_scope == 0)
+        return searchSongsAll(query);   // false = user cancelled
 
     // Songs "Title" search: match song titles directly (instant, no XML scan).
     if (mode == MODE_SONGS && srch_scope == 1) {
@@ -5379,15 +5390,25 @@ bool BibleInterface::searchBible(const char* query) {
 // Songs "All" — body-scan every songbook. Results carry their songbook index in
 // .trans so jumpToSearchResult() can switch files. Reloads each songbook's TOC so
 // parseOsisID resolves its codes, then restores the originally-open songbook.
-void BibleInterface::searchSongsAll(const char* query) {
-    if (!query || !query[0] || !search_results) return;
+bool BibleInterface::searchSongsAll(const char* query) {
+    if (!query || !query[0] || !search_results) return false;
     uint8_t saved_trans = cur_trans;
 
     tft.fillScreen(bg());
     drawHeader("Searching all...", false);
     drawSearchProgress(0, 1);
 
-    for (uint8_t t = 0; t < trans_count &&
+    // Cancel button (same geometry/hit-test as searchBible's).
+    const int16_t CBTN_W = 80, CBTN_H = 26;
+    const int16_t cbtn_bar_y = (int16_t)(contentY() + contentH() / 2 + 8);
+    const int16_t cbtn_x     = (int16_t)(scrW() / 2) - CBTN_W / 2;
+    const int16_t cbtn_y     = cbtn_bar_y + 14 + 18 + 20;
+    tft.fillRoundRect(cbtn_x, cbtn_y, CBTN_W, CBTN_H, 4, hdr_bg());
+    tft.drawRoundRect(cbtn_x, cbtn_y, CBTN_W, CBTN_H, 4, dim_fg());
+    drawSmallCentered("Cancel", (int16_t)(scrW() / 2), cbtn_y, CBTN_H, fg(), hdr_bg());
+
+    bool cancelled = false;
+    for (uint8_t t = 0; t < trans_count && !cancelled &&
                         search_result_count < BIBLE_MAX_SEARCH_RESULTS; t++) {
         if (!loadToc(trans_stems[t])) continue;   // need this file's codes
         char path[64];
@@ -5411,6 +5432,12 @@ void BibleInterface::searchSongsAll(const char* query) {
                 drawSearchProgress((uint32_t)t * 100 + (fsize ? 100UL * pos / fsize : 0),
                                    (uint32_t)trans_count * 100);
                 yield();
+                uint16_t cx, cy;
+                if (pollTouch(&cx, &cy) &&
+                    (int16_t)cx >= cbtn_x && (int16_t)cx < cbtn_x + CBTN_W &&
+                    (int16_t)cy >= cbtn_y && (int16_t)cy < cbtn_y + CBTN_H) {
+                    cancelled = true; break;   // exit this file's scan
+                }
             }
             if (st == ST_TEXT) {
                 if (c == '<') { st = ST_TAG; tag_len = 0; continue; }
@@ -5467,7 +5494,13 @@ void BibleInterface::searchSongsAll(const char* query) {
     // Restore the songbook that was open before the search.
     cur_trans = saved_trans;
     loadToc(trans_stems[cur_trans]);
+    if (cancelled) {
+        search_result_count = 0;
+        needs_redraw = true;
+        return false;
+    }
     drawSearchProgress((uint32_t)trans_count * 100, (uint32_t)trans_count * 100);
+    return true;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
