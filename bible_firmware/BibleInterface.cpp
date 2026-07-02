@@ -301,7 +301,7 @@ BibleInterface::BibleInterface()
       line_count(0), trans_count(0), bm_count(0), bm_sel(0), bm_scroll(0),
       bm_confirm_pending(false),
       search_hist_count(0), search_hist_sel(0),
-      search_result_count(0), search_res_sel(0),
+      search_results(nullptr), search_result_count(0), search_res_sel(0),
       highlight_verse(0), reading_from_search(false),
       search_del_pending(false),
       srch_partial_match(true), srch_ignore_punct(true), srch_scope(0),
@@ -328,7 +328,7 @@ BibleInterface::BibleInterface()
     if (book_offsets) memset(book_offsets, 0, (size_t)book_offsets_cap * sizeof(uint32_t));
     memset(search_query,  0, sizeof(search_query));
     memset(search_hist,   0, sizeof(search_hist));
-    memset(search_results,0, sizeof(search_results));
+    // search_results is heap/PSRAM allocated in RunSetup() (kept out of static .bss).
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -337,6 +337,17 @@ BibleInterface::BibleInterface()
 void BibleInterface::RunSetup() {
     tft.init();
     setUiFont(2);   // load the UI smooth font (14px) so the whole UI renders with it
+
+    // Search results live in PSRAM/heap, not static .bss (the big verse/line/font
+    // buffers already fill internal SRAM). Allocate once at boot.
+    {
+        size_t sr_sz = sizeof(BibleSearchResult) * BIBLE_MAX_SEARCH_RESULTS;
+#ifdef HAS_PSRAM
+        search_results = (BibleSearchResult*)ps_malloc(sr_sz);
+#endif
+        if (!search_results) search_results = (BibleSearchResult*)malloc(sr_sz);
+        if (search_results) memset(search_results, 0, sr_sz);
+    }
 
 #ifdef HAS_CAP_TOUCH
     ft6336_init();
@@ -5137,6 +5148,7 @@ bool BibleInterface::openSearchKeyboard() {
 bool BibleInterface::searchBible(const char* query) {
     search_result_count = 0;
     search_res_sel      = 0;
+    if (!search_results) return false;   // allocation failed at boot — no search
     if (trans_count == 0 || !query || !query[0]) return false;
 
     // Songs "All": body scan across every songbook (handled in its own method).
@@ -5368,7 +5380,7 @@ bool BibleInterface::searchBible(const char* query) {
 // .trans so jumpToSearchResult() can switch files. Reloads each songbook's TOC so
 // parseOsisID resolves its codes, then restores the originally-open songbook.
 void BibleInterface::searchSongsAll(const char* query) {
-    if (!query || !query[0]) return;
+    if (!query || !query[0] || !search_results) return;
     uint8_t saved_trans = cur_trans;
 
     tft.fillScreen(bg());

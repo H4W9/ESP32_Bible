@@ -249,7 +249,7 @@ private:
     char             search_hist[BIBLE_SEARCH_HIST_MAX][BIBLE_SEARCH_QUERY_LEN];
     uint8_t          search_hist_count;
     int16_t          search_hist_sel;
-    BibleSearchResult search_results[BIBLE_MAX_SEARCH_RESULTS];
+    BibleSearchResult* search_results;   // heap/PSRAM (kept out of static .bss)
     uint16_t         search_result_count;
     int16_t          search_res_sel;
     uint8_t          highlight_verse;       // 1-based; 0 = no highlight (from search jump)
