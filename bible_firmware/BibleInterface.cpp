@@ -666,14 +666,15 @@ void BibleInterface::drawScrollBar(int16_t total, int16_t vis, int16_t top) {
 // reload; safe to call every frame in the settings scroll path.
 void BibleInterface::drawChevron(int16_t bx, int16_t by, int16_t bw, int16_t bh, bool right, uint16_t col) {
     int16_t cx = bx + bw / 2, cy = by + bh / 2;
-    if (right) tft.fillTriangle(cx - 3, cy - 5, cx - 3, cy + 5, cx + 4, cy, col);
-    else       tft.fillTriangle(cx + 3, cy - 5, cx + 3, cy + 5, cx - 4, cy, col);
+    if (right) tft.fillTriangle(cx - 2, cy - 4, cx - 2, cy + 4, cx + 3, cy, col);
+    else       tft.fillTriangle(cx + 2, cy - 4, cx + 2, cy + 4, cx - 3, cy, col);
 }
-// Centered "+"/"-" for the brightness selector (2px strokes).
+// Centered "+"/"-" for the brightness selector (2px strokes). The +'s right and
+// bottom arms are 1px shorter so the cross looks evenly proportioned.
 void BibleInterface::drawPlusMinus(int16_t bx, int16_t by, int16_t bw, int16_t bh, bool plus, uint16_t col) {
     int16_t cx = bx + bw / 2, cy = by + bh / 2;
-    tft.fillRect(cx - 5, cy - 1, 11, 2, col);              // horizontal bar
-    if (plus) tft.fillRect(cx - 1, cy - 5, 2, 11, col);    // vertical bar
+    tft.fillRect(cx - 5, cy - 1, 10, 2, col);              // horizontal bar (right −1px)
+    if (plus) tft.fillRect(cx - 1, cy - 5, 2, 10, col);    // vertical bar (bottom −1px)
 }
 // Draw centered text at the X-Small size, vertically centered in [boxY, boxY+boxH).
 // Toggles the loaded UI font; use only off the per-frame scroll path.
@@ -1295,7 +1296,7 @@ void BibleInterface::redrawSettingsContent() {
         int16_t  eseed = row_y / (int16_t)itemH();
         tft.fillRoundRect(fwd_bx, btn_y, btn_w, btn_h, btn_r, hdr_bg());
         tft.drawRoundRect(fwd_bx, btn_y, btn_w, btn_h, btn_r, edgeColor(eseed, dim_fg()));
-        drawChevron(fwd_bx, btn_y, btn_w, btn_h, true, TFT_WHITE);
+        drawChevron(fwd_bx, btn_y, btn_w, btn_h, true, font_fg());
         int16_t nam_w = (int16_t)tft.textWidth(name, 2);
         int16_t nam_x = fwd_bx - 4 - nam_w;
         tft.setTextColor(name_col ? name_col : fg(), bg_c);
@@ -1303,7 +1304,7 @@ void BibleInterface::redrawSettingsContent() {
         int16_t bwd_bx = nam_x - 4 - btn_w;
         tft.fillRoundRect(bwd_bx, btn_y, btn_w, btn_h, btn_r, hdr_bg());
         tft.drawRoundRect(bwd_bx, btn_y, btn_w, btn_h, btn_r, edgeColor(eseed + 4, dim_fg()));
-        drawChevron(bwd_bx, btn_y, btn_w, btn_h, false, TFT_WHITE);
+        drawChevron(bwd_bx, btn_y, btn_w, btn_h, false, font_fg());
     };
     // Translation row: the value can be long, so instead of letting it push the
     // [<] button onto the "Translation" label, the two selectors bracket a fixed
@@ -1319,7 +1320,7 @@ void BibleInterface::redrawSettingsContent() {
         // [>]
         tft.fillRoundRect(fwd_bx, btn_y, btn_w, btn_h, btn_r, hdr_bg());
         tft.drawRoundRect(fwd_bx, btn_y, btn_w, btn_h, btn_r, edgeColor(eseed, dim_fg()));
-        drawChevron(fwd_bx, btn_y, btn_w, btn_h, true, TFT_WHITE);
+        drawChevron(fwd_bx, btn_y, btn_w, btn_h, true, font_fg());
         // Fixed window (~11 chars) for [<], but never let it overlap the label.
         int16_t want_w  = (int16_t)tft.textWidth("Translation", 2);   // 11-char reference
         int16_t label_w = (int16_t)tft.textWidth(label, 2);
@@ -1329,7 +1330,7 @@ void BibleInterface::redrawSettingsContent() {
         // [<]
         tft.fillRoundRect(bwd_bx, btn_y, btn_w, btn_h, btn_r, hdr_bg());
         tft.drawRoundRect(bwd_bx, btn_y, btn_w, btn_h, btn_r, edgeColor(eseed + 4, dim_fg()));
-        drawChevron(bwd_bx, btn_y, btn_w, btn_h, false, TFT_WHITE);
+        drawChevron(bwd_bx, btn_y, btn_w, btn_h, false, font_fg());
         // Value window between the inner edges of the two buttons.
         int16_t win_left = bwd_bx + btn_w + 4;
         int16_t win_w    = (fwd_bx - 4) - win_left;
@@ -1361,7 +1362,7 @@ void BibleInterface::redrawSettingsContent() {
         int16_t plus_bx = (int16_t)scrW() - 9 - btn_w;
         tft.fillRoundRect(plus_bx, btn_y, btn_w, btn_h, btn_r, hdr_bg());
         tft.drawRoundRect(plus_bx, btn_y, btn_w, btn_h, btn_r, edgeColor(eseed, dim_fg()));
-        drawPlusMinus(plus_bx, btn_y, btn_w, btn_h, true, TFT_WHITE);
+        drawPlusMinus(plus_bx, btn_y, btn_w, btn_h, true, font_fg());
         char nbuf[8];
         snprintf(nbuf, sizeof(nbuf), "%d/20", bl_idx + 1);
         int16_t num_w = (int16_t)tft.textWidth(nbuf, 2);
@@ -1371,7 +1372,7 @@ void BibleInterface::redrawSettingsContent() {
         int16_t minus_bx = num_x - 4 - btn_w;
         tft.fillRoundRect(minus_bx, btn_y, btn_w, btn_h, btn_r, hdr_bg());
         tft.drawRoundRect(minus_bx, btn_y, btn_w, btn_h, btn_r, edgeColor(eseed + 4, dim_fg()));
-        drawPlusMinus(minus_bx, btn_y, btn_w, btn_h, false, TFT_WHITE);
+        drawPlusMinus(minus_bx, btn_y, btn_w, btn_h, false, font_fg());
     };
 
     // Cleared each pass; transRow re-asserts it only if the Translation row is
@@ -4420,7 +4421,7 @@ void BibleInterface::drawSearchResultRow(int16_t y_px, uint16_t idx, bool sel) {
     // the original private codes so rendering shows proper umlauts/ß.
     // Private codes are 1-byte just like ASCII, so indices are identical between
     // snip and disp — we match on disp, render from snip.
-    int16_t snip_y = y_px + 23;
+    int16_t snip_y = y_px + 20;
     const char* snip = search_results[idx].snippet;
 
     static const char bases[] = {'A','a','O','o','U','u','B'};
@@ -4492,11 +4493,28 @@ void BibleInterface::drawSearchResultRow(int16_t y_px, uint16_t idx, bool sel) {
     }
 
     tft.setTextDatum(TL_DATUM);
+    setUiFont(0);                          // Tiny for the snippet (one size smaller)
+    const int16_t tiny_lh = (int16_t)VLW_FONTS[0].lineH;
     int16_t sx     = PADDING;
     int16_t max_sx = row_w - PADDING;
+    int16_t cur_y  = snip_y;
+    uint8_t sline  = 0;                     // which snippet line (0 or 1)
     size_t  si     = 0;
 
-    while (disp[si] && sx < max_sx) {
+    // Draw one snippet char, wrapping to a 2nd line when the first fills.
+    // Returns false when both lines are used up.
+    auto snipChar = [&](uint8_t ch, uint16_t color) -> bool {
+        if (sx >= max_sx) {
+            if (sline == 0) { sline = 1; sx = PADDING; cur_y = snip_y + tiny_lh; }
+            else return false;
+        }
+        tft.setTextColor(color, bg_col);
+        sx += tftCharUTF8(tft, ch, sx, cur_y, 1, color);
+        return true;
+    };
+
+    bool room = true;
+    while (disp[si] && room) {
         // Try each token at position si; take the first match.
         bool   found     = false;
         size_t match_end = 0;
@@ -4529,17 +4547,16 @@ void BibleInterface::drawSearchResultRow(int16_t y_px, uint16_t idx, bool sel) {
         }
 
         if (found) {
-            tft.setTextColor((uint16_t)0xFD20, bg_col);
-            for (size_t j = si; j < match_end && sx < max_sx; j++)
-                sx += tftCharUTF8(tft, (uint8_t)snip[j], sx, snip_y, 1, (uint16_t)0xFD20);
+            for (size_t j = si; j < match_end; j++)
+                if (!snipChar((uint8_t)snip[j], (uint16_t)0xFD20)) { room = false; break; }
             si = match_end;
         } else {
             uint16_t text_color = sel ? fg() : dim_fg();
-            tft.setTextColor(text_color, bg_col);
-            sx += tftCharUTF8(tft, (uint8_t)snip[si], sx, snip_y, 1, text_color);
+            if (!snipChar((uint8_t)snip[si], text_color)) room = false;
             si++;
         }
     }
+    setUiFont(1);   // restore X-Small for the next row's reference line
 }
 
 // Partial redraw of search result list (no header/nav repaint).
@@ -5151,7 +5168,7 @@ bool BibleInterface::searchBible(const char* query) {
     const int16_t CBTN_W = 80, CBTN_H = 26;
     const int16_t cbtn_bar_y = (int16_t)(contentY() + contentH() / 2 + 8);
     const int16_t cbtn_x     = (int16_t)(scrW() / 2) - CBTN_W / 2;
-    const int16_t cbtn_y     = cbtn_bar_y + 14 + 18;  // below bar (14px) + pct-text (18px)
+    const int16_t cbtn_y     = cbtn_bar_y + 14 + 18 + 20;  // below bar + pct-text, + 20px gap
     tft.fillRoundRect(cbtn_x, cbtn_y, CBTN_W, CBTN_H, 4, hdr_bg());
     tft.drawRoundRect(cbtn_x, cbtn_y, CBTN_W, CBTN_H, 4, dim_fg());
     drawSmallCentered("Cancel", (int16_t)(scrW() / 2), cbtn_y, CBTN_H, fg(), hdr_bg());

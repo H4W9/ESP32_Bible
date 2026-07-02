@@ -131,6 +131,9 @@ static void drawOptions(TFT_eSPI& tft, uint16_t fg, uint16_t bg,
                         const char* const* scope_opts = nullptr,
                         uint8_t scope_count = 0) {
     tft.loadFont(g_kb_font_small);   // X-Small for the option labels/buttons
+    // Vertically centre text in an OPT_ROW_H-tall row for the loaded smooth font.
+    int16_t  optTy  = ((int16_t)OPT_ROW_H - tft.fontHeight()) / 2;
+    if (optTy < 0) optTy = 0;
     int16_t  optY   = kbY(scrH) - optH();
     uint16_t opt_bg = (bg == TFT_WHITE) ? (uint16_t)0xBDF7 : (uint16_t)0x1082;
     uint16_t bdr    = (bg == TFT_WHITE) ? (uint16_t)0x8430 : (uint16_t)0x4208;
@@ -145,7 +148,7 @@ static void drawOptions(TFT_eSPI& tft, uint16_t fg, uint16_t bg,
         tft.drawRect(6, cby, 12, 12, fg);
         tft.fillRect(8, cby + 2, 8, 8, checked ? hi_bg : opt_bg);
         tft.setTextColor(fg, opt_bg);
-        tft.drawString(label, 24, rY + (OPT_ROW_H - 8) / 2, 1);
+        tft.drawString(label, 24, rY + optTy, 1);
         tft.drawFastHLine(0, rY + OPT_ROW_H, (int16_t)scrW, bdr);
     };
 
@@ -157,20 +160,20 @@ static void drawOptions(TFT_eSPI& tft, uint16_t fg, uint16_t bg,
     tft.setTextColor(fg, opt_bg);
     if (dict_name) {
         // Dictionary mode: tap the row to cycle to the next dictionary.
-        tft.drawString("Dict:", 6, r2y + (OPT_ROW_H - 8) / 2, 1);
+        tft.drawString("Dict:", 6, r2y + optTy, 1);
         char b[40];
         snprintf(b, sizeof(b), "< %s >", dict_name);
         int16_t bw = (int16_t)tft.textWidth(b, 1) + 10;
         tft.fillRoundRect(52, r2y + 4, bw, OPT_ROW_H - 8, 3, hi_bg);
         tft.drawRoundRect(52, r2y + 4, bw, OPT_ROW_H - 8, 3, fg);
         tft.setTextColor((uint16_t)TFT_BLACK, hi_bg);
-        tft.drawString(b, 57, r2y + (OPT_ROW_H - 8) / 2, 1);
+        tft.drawString(b, 57, r2y + optTy, 1);
     } else {
         static const char* DEF_SCOPES[3] = { "Bible", "Section", "Book" };
         const char* label = scope_label ? scope_label : "Scope:";
         const char* const* opts = scope_opts ? scope_opts : DEF_SCOPES;
         uint8_t cnt = scope_count ? scope_count : 3;
-        tft.drawString(label, 6, r2y + (OPT_ROW_H - 8) / 2, 1);
+        tft.drawString(label, 6, r2y + optTy, 1);
         int16_t bx = 6 + (int16_t)tft.textWidth(label, 1) + 8;
         for (uint8_t i = 0; i < cnt; i++) {
             int16_t bw  = (int16_t)tft.textWidth(opts[i], 1) + 8;
@@ -178,7 +181,7 @@ static void drawOptions(TFT_eSPI& tft, uint16_t fg, uint16_t bg,
             tft.fillRoundRect(bx, r2y + 4, bw, OPT_ROW_H - 8, 3, sel ? hi_bg : opt_bg);
             tft.drawRoundRect(bx, r2y + 4, bw, OPT_ROW_H - 8, 3, sel ? fg : bdr);
             tft.setTextColor(sel ? (uint16_t)TFT_BLACK : fg, sel ? hi_bg : opt_bg);
-            tft.drawString(opts[i], bx + 4, r2y + (OPT_ROW_H - 8) / 2, 1);
+            tft.drawString(opts[i], bx + 4, r2y + optTy, 1);
             bx += bw + 4;
         }
     }
