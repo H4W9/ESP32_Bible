@@ -216,11 +216,20 @@ def excel_clean(s: str) -> str:
     return s
 
 
-def load_songs(path: str, title_col="Title1", song_col="Song"):
+def frak_tz_normalize(s: str) -> str:
+    """The DFX blackletter font maps BOTH '|' (U+007C) and '”' (U+201D) to the same
+    'tz' ligature glyph, and the source uses them interchangeably (e.g. 'je”t'=jetzt,
+    'le”ten'=letzten). Fold '”' onto '|' so 'tz' has one encoding the firmware renders
+    correctly — otherwise '”' is treated as a curly quote and displays as a double
+    quote. (U+201C '“' and U+201E '„' remain real quotes and are left untouched.)"""
+    return s.replace("”", "|")
+
+
+def load_songs(path: str, title_col="Title1", song_col="Song", fraktur=False):
     """Yield (book_id, cat_id, title, [stanzas]) for every song with text.
     Title/lyrics are read from the named columns — Fraktur books use the
     'TFrakRegDFXTitle' / 'TFrakRegDFX' columns (blackletter-encoded: '#'=long-s,
-    '¡'/'¿'=ch/ck ligatures) instead of the plain 'Title1' / 'Song'."""
+    '¡'/'¿'=ch/ck ligatures, '|' or '”'=tz) instead of the plain 'Title1' / 'Song'."""
     ws = openpyxl.load_workbook(path, read_only=True).active
     hdr = None
     ti = si = None
@@ -240,6 +249,9 @@ def load_songs(path: str, title_col="Title1", song_col="Song"):
         cid   = int(row[2]) if len(row) > 2 and row[2] is not None else None
         title = excel_clean(str(row[ti])).strip() if len(row) > ti and row[ti] else ""
         song  = excel_clean(str(row[si])).strip() if len(row) > si and row[si] else ""
+        if fraktur:                       # unify the 'tz' ligature encoding
+            title = frak_tz_normalize(title)
+            song  = frak_tz_normalize(song)
         if bid is None or cid is None or not song:
             continue
         stanzas = split_stanzas(song)
@@ -269,7 +281,7 @@ def generate(data_path, books_path, cats_path, out_dir, make_zip,
     total_songs = 0
     tcol, scol = (("TFrakRegDFXTitle", "TFrakRegDFX") if fraktur
                   else ("Title1", "Song"))
-    for bid, cid, title, stanzas in load_songs(data_path, tcol, scol):
+    for bid, cid, title, stanzas in load_songs(data_path, tcol, scol, fraktur=fraktur):
         if (bid, cid) not in cats:
             continue
         songs_by_book.setdefault(bid, []).append((cid, title, stanzas))

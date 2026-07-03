@@ -17,3 +17,13 @@ dist/
 .DS_Store
 Thumbs.db
 *.pyc
+
+# sd_prep generated SD output — regenerable from the Excel/TTF/JSONL sources,
+# large, and not wanted in the repo. The scripts stay tracked.
+sd_prep/__pycache__/
+sd_prep/songs/
+sd_prep/songs_fraktur/
+sd_prep/dictionary/
+
+# Source spreadsheets (song/dictionary data) — kept local, out of the repo.
+*.xlsx
