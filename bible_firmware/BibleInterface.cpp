@@ -6,7 +6,9 @@
 
 #include "BibleInterface.h"
 #include "BibleKeyboard.h"
-#include "fonts_vlw.h"      // flash-resident smooth (VLW) fonts (reader + whole UI)
+#include "fonts_vlw.h"          // flash-resident smooth (VLW) fonts (reader + whole UI)
+#include "fonts_vlw_fraktur.h"        // Fraktur body set (song text, flagged songbooks)
+#include "fonts_vlw_fraktur_title.h"  // Fraktur title set (song/category/book titles)
 
 #ifdef HAS_SCREEN
 
@@ -317,7 +319,7 @@ BibleInterface::BibleInterface()
       about_mcu_y0(0), about_mcu_y1(0),
       book_offsets(nullptr), book_offsets_cap(0),
       book_idx_valid(false), book_idx_trans(0xFF),
-      line_spr(&tft), read_font_loaded(-1), ui_font_idx(-1)
+      line_spr(&tft), read_font_loaded(-1), read_font_frak(false), ui_font_idx(-1), ui_font_frak(false)
 #ifdef HAS_BATTERY
     , batt_ok(false), batt_pct(-1), batt_ms(0)
 #endif
@@ -520,11 +522,16 @@ uint16_t BibleInterface::scrH() const {
     return (orientation & 1) ? pw : ph;
 }
 
+// Reading-font family flag + accessors (defined with the VLW helpers below).
+static bool g_read_fraktur = false;   // set by loadToc; true → Fraktur reading font
+static const uint8_t* vlwForSize(uint8_t idx);
+static uint8_t         vlwLineH(uint8_t idx);
+
 uint16_t BibleInterface::lineH() const {
-    // Reading text is drawn with a smooth VLW font; the row height is the font's
-    // ascent+descent plus a little leading. font_num is the VLW size index (0..3).
+    // Reading text is drawn with a smooth VLW font (normal or Fraktur family); the
+    // row height is the font's ascent+descent plus a little leading.
     uint8_t idx = (font_num < VLW_FONT_COUNT) ? font_num : 3;
-    return (uint16_t)VLW_FONTS[idx].lineH + 3;
+    return (uint16_t)vlwLineH(idx) + 3;
 }
 uint8_t BibleInterface::visItems() const { return contentH() / itemH(); }
 uint8_t BibleInterface::visLines() const { return contentH() / lineH(); }
@@ -549,6 +556,8 @@ void BibleInterface::drawHeader(const char* title, bool show_back) {
     // (song titles, dictionary word pairs). Centred, clipped to avoid the back
     // button (left) and the search/battery area (right).
     {
+        bool    ft     = titleFraktur();           // Fraktur title for song content
+        if (ft) setUiFontEx(2, true);
         int16_t left   = show_back ? 46 : 4;
         bool    full_w = (view == BV_MAIN_MENU) || (view == BV_ABOUT) ||
                          (view == BV_SETTINGS && settings_from_menu);
@@ -559,6 +568,7 @@ void BibleInterface::drawHeader(const char* title, bool show_back) {
         tft.setTextColor(ch_fg, hdr_bg());
         for (const char* p = title; *p && tx0 < right; p++)
             tx0 += tftCharUTF8(tft, (uint8_t)*p, tx0, 6, 2, ch_fg);
+        if (ft) setUiFont(2);                       // restore normal for the rest
     }
 
     // Search button — same bordered-box style as the back button.
@@ -709,13 +719,22 @@ static inline uint32_t vlwBE32(const uint8_t* p) {
     return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) |
            ((uint32_t)p[2] << 8)  |  (uint32_t)p[3];
 }
-// Map a private umlaut code to its Unicode code point (else pass ASCII through).
+// Map a private code (umlauts 0x80-0x86, typographic marks 0x87-0x8E) to its
+// Unicode code point; plain ASCII passes through.
 static inline uint16_t vlwPrivToUnicode(uint8_t c) {
     switch (c) {
         case 0x80: return 0xC4; case 0x81: return 0xE4;   // Ä ä
         case 0x82: return 0xD6; case 0x83: return 0xF6;   // Ö ö
         case 0x84: return 0xDC; case 0x85: return 0xFC;   // Ü ü
         case 0x86: return 0xDF;                            // ß
+        case 0x87: return 0x201E;                          // „  low double quote
+        case 0x88: return 0x201C;                          // "  high double quote
+        case 0x89: return 0x201A;                          // ‚  low single quote
+        case 0x8A: return 0x2018;                          // '  left single quote
+        case 0x8B: return 0x2019;                          // '  right single quote
+        case 0x8C: return 0x2013;                          // –  en dash
+        case 0x8D: return 0x2014;                          // —  em dash
+        case 0x8E: return 0x2026;                          // …  ellipsis
         default:   return c;
     }
 }
@@ -745,21 +764,34 @@ static int16_t vlwTextWidth(const uint8_t* font, const char* s) {
     }
     return w;
 }
-// Convert a private-code string to UTF-8 (umlauts → 2-byte sequences) so the
-// VLW smooth-font drawString renders the real glyphs.
+// Convert a private-code string to UTF-8 so the VLW smooth-font drawString renders
+// the real glyphs. Umlauts (U+00xx) → 2 bytes; typographic marks (U+20xx) → 3 bytes.
 static void vlwPrivToUtf8(const char* in, char* out, size_t n) {
     size_t o = 0;
-    for (const uint8_t* p = (const uint8_t*)in; *p && o + 3 < n; p++) {
+    for (const uint8_t* p = (const uint8_t*)in; *p && o + 4 < n; p++) {
         uint16_t u = vlwPrivToUnicode(*p);
-        if (u < 0x80) out[o++] = (char)u;
-        else { out[o++] = (char)(0xC0 | (u >> 6)); out[o++] = (char)(0x80 | (u & 0x3F)); }
+        if (u < 0x80) {
+            out[o++] = (char)u;
+        } else if (u < 0x800) {
+            out[o++] = (char)(0xC0 | (u >> 6));
+            out[o++] = (char)(0x80 | (u & 0x3F));
+        } else {
+            out[o++] = (char)(0xE0 | (u >> 12));
+            out[o++] = (char)(0x80 | ((u >> 6) & 0x3F));
+            out[o++] = (char)(0x80 | (u & 0x3F));
+        }
     }
     out[o] = 0;
 }
-// The VLW font array for the current reading size index (font_num), clamped.
+// The reading-font array for a size index (font_num), from the active family.
+// g_read_fraktur is set by loadToc from a "FONT|fraktur" line; cleared for Bible.
 static const uint8_t* vlwForSize(uint8_t idx) {
     if (idx >= VLW_FONT_COUNT) idx = 3;
-    return VLW_FONTS[idx].data;
+    return g_read_fraktur ? FRAK_FONTS[idx].data : VLW_FONTS[idx].data;
+}
+static uint8_t vlwLineH(uint8_t idx) {
+    if (idx >= VLW_FONT_COUNT) idx = 3;
+    return g_read_fraktur ? FRAK_FONTS[idx].lineH : VLW_FONTS[idx].lineH;
 }
 
 // Prettify a filename stem for display: '_' → ' ' and capitalize the first
@@ -802,6 +834,10 @@ void BibleInterface::redrawListContent(uint16_t item_count) {
     // global clear (which would cause flash). vpDatum=false keeps screen-absolute coords.
     tft.setViewport(0, contentY(), scrW(), contentH(), false);
 
+    // Category/song lists of a Fraktur songbook render in the Fraktur title font.
+    bool ft = titleFraktur();
+    setUiFontEx(2, ft);
+
     int16_t last_bottom = content_top;
 
     for (int i = 0; ; i++) {
@@ -837,6 +873,8 @@ void BibleInterface::redrawListContent(uint16_t item_count) {
         int16_t bot = y + (int16_t)itemH();
         if (bot > last_bottom) last_bottom = bot;
     }
+
+    if (ft) setUiFont(2);   // restore the normal UI font
 
     // Clear any unused space below the last row (list shorter than content zone).
     // Fill full width — the scrollbar will repaint its 6px column when needed.
@@ -922,10 +960,13 @@ void BibleInterface::drawSectionSelect() {
     // Scroll-aware: Songs can have many categories (sections), so honor menu_scroll
     // and draw a scrollbar (Bible's 4 sections always fit).
     uint8_t vis = visItems();
+    bool ft = titleFraktur();
+    setUiFontEx(2, ft);
     for (uint8_t i = 0; i < vis && (menu_scroll + i) < numSecs(); i++) {
         bool sel = (menu_scroll + i) == (int16_t)menu_sel;
         drawListRow(contentY() + i * itemH(), secName(menu_scroll + i), sel);
     }
+    if (ft) setUiFont(2);
     drawScrollBar(numSecs(), vis, menu_scroll);
     drawNavBar("Marks", "Settings", "Bright");
 }
@@ -939,10 +980,13 @@ void BibleInterface::drawBookSelect() {
     uint8_t vis   = visItems();
     uint16_t start = secStart(cur_sec);
     uint16_t count = secLen(cur_sec);
+    bool ft = titleFraktur();
+    setUiFontEx(2, ft);
     for (uint8_t i = 0; i < vis && (menu_scroll + i) < count; i++) {
         bool sel = (menu_scroll + i) == (int16_t)menu_sel;
         drawListRow(contentY() + i * itemH(), bookDisplay(start + menu_scroll + i), sel);
     }
+    if (ft) setUiFont(2);
     drawScrollBar(count, vis, menu_scroll);
     drawNavBar("Marks", "Settings", "Bright");
 }
@@ -1004,21 +1048,36 @@ void BibleInterface::drawChapterSelect() {
 // unloads it), so this only does real work when the size actually changes.
 void BibleInterface::loadReadingFont() {
     uint8_t idx = (font_num < VLW_FONT_COUNT) ? font_num : 3;
-    if (read_font_loaded == (int8_t)idx) return;
-    line_spr.loadFont(VLW_FONTS[idx].data);   // unloads any previous font first
+    if (read_font_loaded == (int8_t)idx && read_font_frak == g_read_fraktur) return;
+    line_spr.loadFont(vlwForSize(idx));        // normal or Fraktur; unloads previous first
     read_font_loaded = (int8_t)idx;
+    read_font_frak   = g_read_fraktur;
 }
 
 // Load a smooth VLW size onto tft for the whole UI. While a font is loaded every
 // TFT_eSPI text call (drawString/drawCentreString/drawChar/textWidth) renders with
 // it, so menus, headers, nav, buttons and the keyboard all use the smooth font and
 // its native umlaut glyphs. Big elements bump to a larger size and restore.
-void BibleInterface::setUiFont(uint8_t idx) {
+void BibleInterface::setUiFont(uint8_t idx) { setUiFontEx(idx, false); }
+
+// As setUiFont, but selects the Fraktur *title* family when frak_title is true —
+// used to render song/category/book titles of Fraktur songbooks in blackletter.
+void BibleInterface::setUiFontEx(uint8_t idx, bool frak_title) {
     if (idx >= VLW_FONT_COUNT) idx = 2;
-    if (ui_font_idx == (int8_t)idx) return;
-    tft.loadFont(VLW_FONTS[idx].data);
-    g_ui_vlw   = VLW_FONTS[idx].data;
+    if (ui_font_idx == (int8_t)idx && ui_font_frak == frak_title) return;
+    const VlwFont* fam = frak_title ? FRAKT_FONTS : VLW_FONTS;
+    tft.loadFont(fam[idx].data);
+    g_ui_vlw    = fam[idx].data;
     ui_font_idx = (int8_t)idx;
+    ui_font_frak = frak_title;
+}
+
+// True when the current view is showing a Fraktur songbook's own content, so its
+// titles (category/song names, reading header) should render in the Fraktur title
+// font. NOT the songbook picker (which lists mixed books).
+bool BibleInterface::titleFraktur() const {
+    if (!g_read_fraktur || mode != MODE_SONGS) return false;
+    return (view == BV_READING || view == BV_BOOK_SELECT || view == BV_SECTION_SELECT);
 }
 
 void BibleInterface::drawReadingLines() {
@@ -2774,6 +2833,7 @@ bool BibleInterface::loadDictPages(uint16_t book) {
 // Books must be grouped by section and contiguous (the generator guarantees this).
 bool BibleInterface::loadToc(const char* stem) {
     freeRuntime();
+    g_read_fraktur = false;   // default; a "F|fraktur" line turns it on for this file
     char path[80];
     snprintf(path, sizeof(path), "%s/%s.toc", basePath(), stem);
 
@@ -2821,7 +2881,9 @@ bool BibleInterface::loadToc(const char* stem) {
         while (len && (ln[len - 1] == '\r' || ln[len - 1] == ' ')) ln[--len] = 0;
 
         if (len >= 2 && ln[1] == '|') {
-            if (ln[0] == 'S' && si < nsec) {
+            if (ln[0] == 'F') {                 // F|fraktur → use the Fraktur reading font
+                g_read_fraktur = (strcmp(ln + 2, "fraktur") == 0);
+            } else if (ln[0] == 'S' && si < nsec) {
                 strncpy(rt_secs[si].name, ln + 2, RT_SEC_NAME_LEN - 1);
                 rt_secs[si].name[RT_SEC_NAME_LEN - 1] = 0;
                 utf8Encode(rt_secs[si].name);   // UTF-8 umlauts → private codes for rendering
@@ -3055,6 +3117,7 @@ void BibleInterface::selectTranslation(uint16_t idx) {
     } else {
         // Bible: ensure the byte-offset buffer exists (filled lazily from the .idx
         // file inside cacheChapter). loadToc() handles this for Songs/Dict.
+        g_read_fraktur = false;   // Bible always uses the normal reading font
         if (!book_offsets || book_offsets_cap < BIBLE_BOOK_COUNT) {
             if (book_offsets) free(book_offsets);
             book_offsets     = (uint32_t*)RT_MALLOC(sizeof(uint32_t) * BIBLE_BOOK_COUNT);
@@ -3421,9 +3484,10 @@ void BibleInterface::xmlDecodeEntities(char* buf, size_t len) {
     }
 }
 
-// Compress 2-byte UTF-8 German sequences to private single-byte codes:
-//   0x80=Ä  0x81=ä  0x82=Ö  0x83=ö  0x84=Ü  0x85=ü  0x86=ß (pixel-drawn)
-// All other unrecognised multi-byte sequences: lead byte is kept, trail byte dropped.
+// Compress multi-byte UTF-8 to private single-byte codes the VLW fonts render:
+//   umlauts/ß  0x80=Ä 0x81=ä 0x82=Ö 0x83=ö 0x84=Ü 0x85=ü 0x86=ß
+//   typographic 0x87=„ 0x88=" 0x89=‚ 0x8A=' 0x8B=' 0x8C=– 0x8D=— 0x8E=…
+// Other unrecognised multi-byte sequences: lead byte kept, trail dropped.
 // Uses read/write pointers so no additional buffer is needed.
 void BibleInterface::utf8Encode(char* buf) {
     char* r = buf;
@@ -3456,23 +3520,27 @@ void BibleInterface::utf8Encode(char* buf) {
             r += 2; continue;
         }
 
-        // ── 3-byte: punctuation (0xE2 …) mapped to ASCII equivalents ──────────
+        // ── 3-byte: typographic marks (0xE2 …) → private codes 0x87-0x8E so they
+        //    render literally in the font (variants fold onto the baked glyphs). ──
         if (b == 0xE2 && b1 && b2) {
             if (b1 == 0x80) {
                 switch (b2) {
-                    case 0x98: case 0x99: case 0x9A: case 0x9B:
-                        *w++ = '\''; break;                       // ‘ ’ ‚ ‛
-                    case 0x9C: case 0x9D: case 0x9E: case 0x9F:
-                        *w++ = '"';  break;                       // “ ” „ ‟
-                    case 0x90: case 0x91: case 0x93: case 0x94: case 0x95:
-                        *w++ = '-';  break;                       // ‐ ‑ – — ―
-                    case 0xA6: *w++ = '.'; *w++ = '.'; *w++ = '.'; break;  // …
-                    case 0xA2: *w++ = '*';  break;                // • bullet
-                    case 0xAF: *w++ = ' ';  break;                // narrow nbsp
-                    default: break;                               // zwsp etc. drop
+                    case 0x9E:            *w++ = (char)0x87; break;  // „ low double
+                    case 0x9C: case 0x9D: case 0x9F:
+                                          *w++ = (char)0x88; break;  // “ ” ‟ → " high double
+                    case 0x9A:            *w++ = (char)0x89; break;  // ‚ low single
+                    case 0x98:            *w++ = (char)0x8A; break;  // ‘ left single
+                    case 0x99: case 0x9B: *w++ = (char)0x8B; break;  // ’ ‛ → ' right single
+                    case 0x90: case 0x91: case 0x93:
+                                          *w++ = (char)0x8C; break;  // ‐ ‑ – → en dash
+                    case 0x94: case 0x95: *w++ = (char)0x8D; break;  // — ― → em dash
+                    case 0xA6:            *w++ = (char)0x8E; break;  // … ellipsis
+                    case 0xA2: *w++ = '*';  break;                   // • bullet (no glyph)
+                    case 0xAF: *w++ = ' ';  break;                   // narrow nbsp
+                    default: break;                                  // zwsp etc. drop
                 }
             } else if (b1 == 0x88 && b2 == 0x92) {
-                *w++ = '-';                                       // − minus sign
+                *w++ = '-';                                          // − minus sign
             }
             r += 3; continue;
         }
@@ -3491,34 +3559,6 @@ int16_t BibleInterface::textWidthUTF8(const char* str, uint8_t /*font*/) {
     return vlwTextWidth(g_ui_vlw, str);
 }
 
-// Render ß (private code 0x86) as a pixel-drawn glyph matching each font size.
-// Returns the advance width (pixels to next character).
-//
-// Glyph designs (y = top of character cell, same coordinate as drawChar):
-//
-//   Font 1 (GLCD 8px) — 6-col canvas, advance 6
-//     .##...   row 0  top arch
-//     #..#..   row 1  open counters
-//     #..#..   row 2
-//     #.#...   row 3  diagonal mid-junction
-//     #..#..   row 4
-//     #...#.   row 5  lower lobe widens
-//     #...#.   row 6
-//     ..##..   row 7  bottom tail
-//
-//   Font 2 (Font16 16px) — 8-col canvas, advance 8
-//     .###....  row 3  top arch (3px)
-//     #...#...  row 4  open counters
-//     ...
-//     #.##....  row 7  mid junction (cols 2-3)
-//     #...#...  row 8
-//     #....#..  rows 9-11  lower lobe widens to col 5
-//     #...#...  row 12
-//     ..##....  row 13 bottom tail
-//
-//   Font 4 (Font32 26px) — 13-col canvas, advance 13
-//     Smooth curved ß: 2px-wide left stem (cols 1-2, rows 5-17),
-//     rounded upper loop, rounded lower lobe, curved bottom tail.
 // Extract attribute value from a tag string like:  verse osisID="Gen.1.1"
 bool BibleInterface::xmlGetAttr(const char* tag, const char* attr, char* out, size_t out_len) {
     const char* p = strstr(tag, attr);
@@ -5026,7 +5066,7 @@ bool BibleInterface::searchContains(const char* text, const char* query) {
         size_t ti = 0;
         for (const char* p = text; *p && ti < BIBLE_VERSE_BUF - 1; p++) {
             uint8_t c = (uint8_t)*p;
-            if (c < 0x80 && ispunct((int)c)) continue;
+            if ((c < 0x80 && ispunct((int)c)) || (c >= 0x87 && c <= 0x8E)) continue;  // + typographic marks
             t2[ti++] = *p;
         }
         t2[ti] = 0;
@@ -5035,7 +5075,7 @@ bool BibleInterface::searchContains(const char* text, const char* query) {
         size_t qi = 0;
         for (const char* p = query; *p && qi < BIBLE_SEARCH_QUERY_LEN - 1; p++) {
             uint8_t c = (uint8_t)*p;
-            if (c < 0x80 && ispunct((int)c)) continue;
+            if ((c < 0x80 && ispunct((int)c)) || (c >= 0x87 && c <= 0x8E)) continue;  // + typographic marks
             q2[qi++] = *p;
         }
         q2[qi] = 0;

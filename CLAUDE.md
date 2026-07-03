@@ -71,11 +71,12 @@ Each view has a `draw*()` function (full redraw with `fillScreen`) and a `handle
 Reads OSIS `.xml` files from SD in 512-byte chunks. Parses `<verse osisID="Gen.1.1">` tags to extract book/chapter/verse. Stores up to `BIBLE_MAX_VERSES_CACHED` verses (30 without PSRAM, 200 with) in `verse_buf[]`. `buildWrappedLines()` wraps verse text into `lines[]` (format: `^N|text` for verse-start lines, plain text for continuations).
 
 ### German UTF-8 encoding
-Multi-byte UTF-8 umlauts/ß are compressed to single private bytes in `verse_buf[]` and `lines[]`:
+Multi-byte UTF-8 umlauts/ß and German typographic marks are compressed to single private bytes in `verse_buf[]` and `lines[]` by `utf8Encode()`:
 ```
-0x80=Ä  0x81=ä  0x82=Ö  0x83=ö  0x84=Ü  0x85=ü  0x86=ß
+0x80=Ä 0x81=ä 0x82=Ö 0x83=ö 0x84=Ü 0x85=ü 0x86=ß
+0x87=„ 0x88=" 0x89=‚ 0x8A=' 0x8B=' 0x8C=– 0x8D=— 0x8E=…
 ```
-Rendering uses `tftCharUTF8()` (BibleInterface.cpp, file-scope static) for TFT_eSPI and templates from `BibleDrawUTF8.h` for both TFT_eSPI and TFT_eSprite. **TFT_eSprite's `fillRect`/`drawChar` are not virtual**, so templates are used to bind the correct override at compile time.
+Rendering uses anti-aliased **VLW smooth fonts** (`fonts_vlw.h` + Fraktur variants). Private codes are mapped back to Unicode via `vlwPrivToUnicode()` and drawn either as UTF-8 via the reader's `printToSprite` (`vlwPrivToUtf8()`) or per-glyph via `tftCharUTF8()` (`drawGlyph`) in the UI. The font arrays include the umlaut and typographic glyphs (`make_vlw.py --extended`).
 
 ### Layout constants
 ```

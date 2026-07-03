@@ -57,9 +57,9 @@ ACCENT_BASE = {
     'ó':'o','ò':'o','ô':'o','õ':'o','ō':'o','ø':'o',
     'ú':'u','ù':'u','û':'u','ū':'u','ý':'y','ÿ':'y',
 }
-# Typographic marks kept as-is in the XML — the firmware renders them (it maps
-# each to its ASCII equivalent at draw time: single/double curly quotes -> ' ",
-# en/em dash -> -, ellipsis -> ...).
+# Typographic marks kept as-is in the XML. The firmware renders the German quotes
+# („ " ‚ ' '), en/em dashes and ellipsis as real glyphs (private codes 0x87-0x8E);
+# the few without a font glyph (− • ´) still fall back to ASCII at draw time.
 KEEP_TYPO = set("‘’‚‛“”„‟–—−‐‑…•´")
 # Whitespace variants normalised to a plain space (or dropped).
 SPACE_MAP = {" ": " ", " ": " ", " ": " ", "​": ""}
@@ -217,7 +217,8 @@ def load_songs(path: str):
 
 
 # ── Main generation ──────────────────────────────────────────────────────────
-def generate(data_path, books_path, cats_path, out_dir, make_zip):
+def generate(data_path, books_path, cats_path, out_dir, make_zip,
+             fraktur=False, suffix=""):
     for p in (data_path, books_path, cats_path):
         if not os.path.isfile(p):
             sys.exit(f"ERROR: file not found: {p}")
@@ -245,9 +246,10 @@ def generate(data_path, books_path, cats_path, out_dir, make_zip):
     written_files = []
     grand_verses = 0
 
+    out_suffix = suffix if suffix is not None else ("_fraktur" if fraktur else "")
     for bid, songlist in songs_by_book.items():
         book_title = books[bid]
-        stem = safe_stem(book_title)
+        stem = safe_stem(book_title) + out_suffix
 
         # Categories sorted alphabetically by display name; songs sorted
         # alphabetically by title within each category. Books stay grouped by
@@ -299,6 +301,8 @@ def generate(data_path, books_path, cats_path, out_dir, make_zip):
         disp_name = toc_safe(clip(sanitize_text(book_title), DISPLAY_MAX))
         with open(toc_path, "w", encoding="utf-8", newline="\n") as tf:
             tf.write(f"T|{disp_name}\n")
+            if fraktur:
+                tf.write("F|fraktur\n")   # firmware reads song text with the Fraktur font
             for line in toc_lines:
                 tf.write(line + "\n")
             for code, disp, sec_idx, offset in book_entries:
@@ -327,8 +331,16 @@ def main():
     ap.add_argument("--cats",  default=DEF_CATS,  help="SngCategory.xlsx")
     ap.add_argument("--out",   default=DEF_OUT,   help="output directory")
     ap.add_argument("--zip",   action="store_true", help="also build <out>_sd.zip")
+    ap.add_argument("--fraktur", action="store_true",
+                    help="mark these songbooks to be read with the Fraktur font "
+                         "(writes 'F|fraktur' into each .toc); also suffixes output "
+                         "filenames with '_fraktur' unless --suffix overrides it")
+    ap.add_argument("--suffix", default=None,
+                    help="append this to each output filename stem (default: "
+                         "'_fraktur' when --fraktur, else none)")
     args = ap.parse_args()
-    generate(args.data, args.books, args.cats, args.out, args.zip)
+    generate(args.data, args.books, args.cats, args.out, args.zip,
+             fraktur=args.fraktur, suffix=args.suffix)
 
 
 if __name__ == "__main__":

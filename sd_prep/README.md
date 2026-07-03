@@ -261,6 +261,38 @@ options Tiny / X-Small / Small / Medium / Large / X-Large (index 3 = Medium is t
 default). If you change the count or order, update `SZ_NAMES[]` and the default
 index in `BibleInterface.cpp`. Rebuild the firmware after regenerating.
 
+### Fraktur songbooks (a second, blackletter font family)
+
+Some songbooks are meant to be read in **Fraktur**. Two extra font families are baked
+in: a **body** font for the song lyrics and a **title** font for song/category/book
+titles. Both are generated with a distinct `--prefix` and `--no-struct` (the shared
+`struct VlwFont` lives in the main header), at the same six sizes:
+
+```cmd
+:: body font  → FRAK_FONTS[]  (fonts_vlw_fraktur.h)
+python make_vlw.py "C:\...\tfrakreg.TTF"   --prefix frak  --extended --no-struct --out ..\bible_firmware\fonts_vlw_fraktur.h
+:: title font → FRAKT_FONTS[] (fonts_vlw_fraktur_title.h)
+python make_vlw.py "C:\...\tFrakTitle.ttf" --prefix frakt --extended --no-struct --out ..\bible_firmware\fonts_vlw_fraktur_title.h
+```
+
+`--extended` also bakes in the German typographic marks (curly quotes „ " ‚ ' , en/em
+dashes, ellipsis) that the font has (glyphs the font lacks are skipped).
+
+Generate the Fraktur songbooks from their own Excel files with `--fraktur` (writes
+`F|fraktur` into each `.toc` and suffixes filenames with `_fraktur`):
+
+```cmd
+python generate_songs_xml.py --fraktur --data SngData_Fraktur.xlsx --books SngBooks_Fraktur.xlsx --cats SngCategory_Fraktur.xlsx --out songs_fraktur
+```
+
+Copy the resulting `*_fraktur.xml` + `*_fraktur.toc` into `/esp32_library/songs/`. When
+a songbook's `.toc` has `F|fraktur`, the firmware renders **its** category/song titles
+and its song text in Fraktur (titles use the title font, lyrics the body font)
+everywhere they're shown — the reader, the category and song lists, and the reading
+header. The songbook picker and everything else stay in the normal font. ASCII,
+umlauts, ß **and** the German typographic marks (curly quotes „ " ‚ ' , en/em dashes,
+ellipsis) all render as real glyphs — in every font, not just Fraktur.
+
 ## Final SD card layout
 
 ```
