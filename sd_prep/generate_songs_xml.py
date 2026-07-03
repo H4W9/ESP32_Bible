@@ -61,6 +61,10 @@ ACCENT_BASE = {
 # („ " ‚ ' '), en/em dashes and ellipsis as real glyphs (private codes 0x87-0x8E);
 # the few without a font glyph (− • ´) still fall back to ASCII at draw time.
 KEEP_TYPO = set("‘’‚‛“”„‟–—−‐‑…•´")
+# Fraktur blackletter encoding (from the TFrakRegDFX* columns): '#' is long-s and
+# these codepoints map to ch/ck ligatures + per-mille in the Fraktur font — keep
+# them verbatim so the font renders the right glyph.
+KEEP_TYPO |= {chr(0xA1), chr(0xBF), chr(0x2030)}   # ¡ ¿ ‰ (ch/ck ligatures + per-mille)
 # Whitespace variants normalised to a plain space (or dropped).
 SPACE_MAP = {" ": " ", " ": " ", " ": " ", "​": ""}
 
@@ -151,8 +155,10 @@ def clip(s: str, n: int) -> str:
 
 
 def toc_safe(s: str) -> str:
-    """Strip characters that would break a pipe-delimited single-line .toc field."""
-    return s.replace("|", "/").replace("\r", " ").replace("\n", " ").strip()
+    """Make a value safe for a pipe-delimited single-line .toc field. Real '|' (the
+    Fraktur 'tz' ligature) is escaped to 0x1F so it survives; the firmware restores
+    it after splitting fields. Newlines become spaces."""
+    return s.replace("|", "\x1f").replace("\r", " ").replace("\n", " ").strip()
 
 
 # ── Excel loading ────────────────────────────────────────────────────────────
@@ -194,20 +200,46 @@ def load_categories(path: str, books: dict) -> dict:
     return cats
 
 
-def load_songs(path: str):
-    """Yield (book_id, cat_id, title, [stanzas]) for every song with text."""
+_XESC = re.compile(r"_x([0-9A-Fa-f]{4})_")
+
+
+def excel_clean(s: str) -> str:
+    """Decode Excel's _xHHHH_ control-char escapes (e.g. _x000D_ = CR that openpyxl
+    leaves as literal text), drop the CRs (the \\n keeps the line break), and fold
+    em/other exotic spaces to a plain space."""
+    if not s:
+        return s
+    s = _XESC.sub(lambda m: chr(int(m.group(1), 16)), s)
+    s = s.replace("\r", "")
+    for cp in (0x2003, 0x2002, 0x2009, 0x00A0, 0x2007):   # em/en/thin/nbsp/figure space
+        s = s.replace(chr(cp), " ")
+    return s
+
+
+def load_songs(path: str, title_col="Title1", song_col="Song"):
+    """Yield (book_id, cat_id, title, [stanzas]) for every song with text.
+    Title/lyrics are read from the named columns — Fraktur books use the
+    'TFrakRegDFXTitle' / 'TFrakRegDFX' columns (blackletter-encoded: '#'=long-s,
+    '¡'/'¿'=ch/ck ligatures) instead of the plain 'Title1' / 'Song'."""
     ws = openpyxl.load_workbook(path, read_only=True).active
-    first = True
+    hdr = None
+    ti = si = None
     for row in ws.iter_rows(values_only=True):
-        if first:
-            first = False
+        if hdr is None:
+            hdr = list(row)
+            try:
+                ti = hdr.index(title_col)
+                si = hdr.index(song_col)
+            except ValueError:
+                sys.exit(f"ERROR: column '{title_col}' or '{song_col}' not found in {path}\n"
+                         f"       available: {hdr}")
             continue
         if not row or row[0] is None:
             continue
         bid   = int(row[1]) if len(row) > 1 and row[1] is not None else None
         cid   = int(row[2]) if len(row) > 2 and row[2] is not None else None
-        title = str(row[3]).strip() if len(row) > 3 and row[3] else ""
-        song  = str(row[4]).strip() if len(row) > 4 and row[4] else ""
+        title = excel_clean(str(row[ti])).strip() if len(row) > ti and row[ti] else ""
+        song  = excel_clean(str(row[si])).strip() if len(row) > si and row[si] else ""
         if bid is None or cid is None or not song:
             continue
         stanzas = split_stanzas(song)
@@ -235,7 +267,9 @@ def generate(data_path, books_path, cats_path, out_dir, make_zip,
     # Group songs:  songs_by_book[bid] = list of (cat_id, title, stanzas)
     songs_by_book = {}
     total_songs = 0
-    for bid, cid, title, stanzas in load_songs(data_path):
+    tcol, scol = (("TFrakRegDFXTitle", "TFrakRegDFX") if fraktur
+                  else ("Title1", "Song"))
+    for bid, cid, title, stanzas in load_songs(data_path, tcol, scol):
         if (bid, cid) not in cats:
             continue
         songs_by_book.setdefault(bid, []).append((cid, title, stanzas))

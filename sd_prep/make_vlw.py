@@ -39,8 +39,10 @@ except ImportError:
 # Printable ASCII (space excluded — TFT_eSPI handles it via spaceWidth) + umlauts.
 BASE_CHARSET = [chr(c) for c in range(0x21, 0x7F)] + list("ÄÖÜäöüß")
 # --extended also bakes in the German typographic marks: „ " ‚ ' ' – — …
+# plus the Fraktur ligature codepoints ¡ ¿ (ch/ck), ´ and ‰. (# = long-s is ASCII.)
 EXTRA_CHARSET = [chr(c) for c in (0x201E, 0x201C, 0x201A, 0x2018, 0x2019,
-                                  0x2013, 0x2014, 0x2026)]
+                                  0x2013, 0x2014, 0x2026,
+                                  0x00A1, 0x00BF, 0x00B4, 0x2030)]
 
 
 def be32(v):

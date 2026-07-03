@@ -735,7 +735,8 @@ static inline uint16_t vlwPrivToUnicode(uint8_t c) {
         case 0x8C: return 0x2013;                          // –  en dash
         case 0x8D: return 0x2014;                          // —  em dash
         case 0x8E: return 0x2026;                          // …  ellipsis
-        default:   return c;
+        case 0x8F: return 0x2030;                          // ‰  per mille
+        default:   return c;   // incl. raw Latin-1 (¡ 0xA1, ¿ 0xBF, ´ 0xB4 …)
     }
 }
 // xAdvance (px) of a glyph in a VLW flash array, or -1 if the glyph is absent.
@@ -2835,6 +2836,13 @@ bool BibleInterface::loadDictPages(uint16_t book) {
 //   S|<section display name>
 //   B|<code>|<display>|<chapterCount>|<sectionIndex>|<byteOffset>
 // Books must be grouped by section and contiguous (the generator guarantees this).
+// Restore a real '|' (the Fraktur "tz" ligature) that the generator escaped to
+// 0x1F so it wouldn't be mistaken for a .toc field separator. Call on a display
+// field after it has been split out, before utf8Encode.
+static void tocRestorePipe(char* s) {
+    for (; *s; s++) if ((uint8_t)*s == 0x1F) *s = '|';
+}
+
 bool BibleInterface::loadToc(const char* stem) {
     freeRuntime();
     g_read_fraktur = false;   // default; a "F|fraktur" line turns it on for this file
@@ -2890,6 +2898,7 @@ bool BibleInterface::loadToc(const char* stem) {
             } else if (ln[0] == 'S' && si < nsec) {
                 strncpy(rt_secs[si].name, ln + 2, RT_SEC_NAME_LEN - 1);
                 rt_secs[si].name[RT_SEC_NAME_LEN - 1] = 0;
+                tocRestorePipe(rt_secs[si].name);
                 utf8Encode(rt_secs[si].name);   // UTF-8 umlauts → private codes for rendering
                 rt_secs[si].start = 0; rt_secs[si].len = 0;
                 si++;
@@ -2905,6 +2914,7 @@ bool BibleInterface::loadToc(const char* stem) {
                     rt_books[bi].code[RT_CODE_LEN - 1] = 0;
                     strncpy(rt_books[bi].display, f1 + 1, RT_DISP_LEN - 1);
                     rt_books[bi].display[RT_DISP_LEN - 1] = 0;
+                    tocRestorePipe(rt_books[bi].display);
                     utf8Encode(rt_books[bi].display);  // UTF-8 umlauts → private codes
                     uint16_t chaps = (uint16_t)atoi(f2 + 1);
                     rt_books[bi].chapters = chaps ? chaps : 1;
@@ -3518,8 +3528,12 @@ void BibleInterface::utf8Encode(char* buf) {
             r += 2; continue;
         }
         if (b == 0xC2 && b1) {
+            // Kept as their raw Latin-1 byte (rendered via the font's U+00xx glyph);
+            // in the Fraktur font ¡/¿ are the ch/ck ligatures.
             if      (b1 == 0xA0) *w++ = ' ';             // non-breaking space
-            else if (b1 == 0xB4) *w++ = '\'';            // ´ acute accent
+            else if (b1 == 0xA1) *w++ = (char)0xA1;      // ¡  (Fraktur: ch ligature)
+            else if (b1 == 0xBF) *w++ = (char)0xBF;      // ¿  (Fraktur: ck ligature)
+            else if (b1 == 0xB4) *w++ = (char)0xB4;      // ´  acute accent
             /* else (©, °, …) drop */
             r += 2; continue;
         }
@@ -3539,6 +3553,7 @@ void BibleInterface::utf8Encode(char* buf) {
                                           *w++ = (char)0x8C; break;  // ‐ ‑ – → en dash
                     case 0x94: case 0x95: *w++ = (char)0x8D; break;  // — ― → em dash
                     case 0xA6:            *w++ = (char)0x8E; break;  // … ellipsis
+                    case 0xB0:            *w++ = (char)0x8F; break;  // ‰ per mille
                     case 0xA2: *w++ = '*';  break;                   // • bullet (no glyph)
                     case 0xAF: *w++ = ' ';  break;                   // narrow nbsp
                     default: break;                                  // zwsp etc. drop
@@ -4040,6 +4055,7 @@ void BibleInterface::transDisplayName(const char* base, const char* stem, char* 
                 if (ln[0] == 'T' && ln[1] == '|') {
                     strncpy(out, ln + 2, n - 1);
                     out[n - 1] = 0;
+                    tocRestorePipe(out);
                     utf8Encode(out);          // UTF-8 umlauts → private codes for rendering
                     return;
                 }
