@@ -378,7 +378,8 @@ private:
     void loadReadingFont();   // (re)load the VLW font for font_num into line_spr
     void setUiFont(uint8_t idx);  // load a UI VLW size onto tft (menus/chrome/keyboard)
     void setUiFontEx(uint8_t idx, bool frak_title);  // normal or Fraktur-title family
-    bool titleFraktur() const;    // true when current view's titles are Fraktur songbook
+    bool headerFraktur() const;   // reading-view song-title header → Fraktur
+    bool rowsFraktur() const;     // song-list (BV_BOOK_SELECT) rows → Fraktur
 
     // ── Colors ────────────────────────────────────────────────────────────
     uint16_t fg()      const;

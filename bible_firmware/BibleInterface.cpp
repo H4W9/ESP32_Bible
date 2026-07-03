@@ -556,7 +556,7 @@ void BibleInterface::drawHeader(const char* title, bool show_back) {
     // (song titles, dictionary word pairs). Centred, clipped to avoid the back
     // button (left) and the search/battery area (right).
     {
-        bool    ft     = titleFraktur();           // Fraktur title for song content
+        bool    ft     = headerFraktur();          // Fraktur only for the song-title header
         if (ft) setUiFontEx(2, true);
         int16_t left   = show_back ? 46 : 4;
         bool    full_w = (view == BV_MAIN_MENU) || (view == BV_ABOUT) ||
@@ -834,8 +834,9 @@ void BibleInterface::redrawListContent(uint16_t item_count) {
     // global clear (which would cause flash). vpDatum=false keeps screen-absolute coords.
     tft.setViewport(0, contentY(), scrW(), contentH(), false);
 
-    // Category/song lists of a Fraktur songbook render in the Fraktur title font.
-    bool ft = titleFraktur();
+    // Only the song list (BV_BOOK_SELECT) of a Fraktur songbook renders its rows in
+    // the Fraktur title font; category names and all other lists stay normal.
+    bool ft = rowsFraktur();
     setUiFontEx(2, ft);
 
     int16_t last_bottom = content_top;
@@ -960,13 +961,12 @@ void BibleInterface::drawSectionSelect() {
     // Scroll-aware: Songs can have many categories (sections), so honor menu_scroll
     // and draw a scrollbar (Bible's 4 sections always fit).
     uint8_t vis = visItems();
-    bool ft = titleFraktur();
-    setUiFontEx(2, ft);
+    // Category names are never Fraktur — always the normal font.
+    setUiFont(2);
     for (uint8_t i = 0; i < vis && (menu_scroll + i) < numSecs(); i++) {
         bool sel = (menu_scroll + i) == (int16_t)menu_sel;
         drawListRow(contentY() + i * itemH(), secName(menu_scroll + i), sel);
     }
-    if (ft) setUiFont(2);
     drawScrollBar(numSecs(), vis, menu_scroll);
     drawNavBar("Marks", "Settings", "Bright");
 }
@@ -980,7 +980,7 @@ void BibleInterface::drawBookSelect() {
     uint8_t vis   = visItems();
     uint16_t start = secStart(cur_sec);
     uint16_t count = secLen(cur_sec);
-    bool ft = titleFraktur();
+    bool ft = rowsFraktur();          // song titles in Fraktur
     setUiFontEx(2, ft);
     for (uint8_t i = 0; i < vis && (menu_scroll + i) < count; i++) {
         bool sel = (menu_scroll + i) == (int16_t)menu_sel;
@@ -1072,12 +1072,16 @@ void BibleInterface::setUiFontEx(uint8_t idx, bool frak_title) {
     ui_font_frak = frak_title;
 }
 
-// True when the current view is showing a Fraktur songbook's own content, so its
-// titles (category/song names, reading header) should render in the Fraktur title
-// font. NOT the songbook picker (which lists mixed books).
-bool BibleInterface::titleFraktur() const {
-    if (!g_read_fraktur || mode != MODE_SONGS) return false;
-    return (view == BV_READING || view == BV_BOOK_SELECT || view == BV_SECTION_SELECT);
+// Fraktur is used ONLY for song titles and song text — never category or songbook
+// names. So: the reading-view header (the open song's title) uses the Fraktur title
+// font, and the song list (BV_BOOK_SELECT rows = song titles) uses it. Category
+// names (BV_SECTION_SELECT rows), the songbook-name and category-name headers, and
+// the picker all stay in the normal font.
+bool BibleInterface::headerFraktur() const {
+    return g_read_fraktur && mode == MODE_SONGS && view == BV_READING;
+}
+bool BibleInterface::rowsFraktur() const {
+    return g_read_fraktur && mode == MODE_SONGS && view == BV_BOOK_SELECT;
 }
 
 void BibleInterface::drawReadingLines() {
