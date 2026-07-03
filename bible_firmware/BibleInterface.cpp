@@ -319,7 +319,7 @@ BibleInterface::BibleInterface()
       about_mcu_y0(0), about_mcu_y1(0),
       book_offsets(nullptr), book_offsets_cap(0),
       book_idx_valid(false), book_idx_trans(0xFF),
-      line_spr(&tft), read_font_loaded(-1), read_font_frak(false), ui_font_idx(-1), ui_font_frak(false)
+      line_spr(&tft), read_font_loaded(-1), read_font_frak(false), ui_font_idx(-1), ui_font_fam(0)
 #ifdef HAS_BATTERY
     , batt_ok(false), batt_pct(-1), batt_ms(0)
 #endif
@@ -1059,18 +1059,21 @@ void BibleInterface::loadReadingFont() {
 // TFT_eSPI text call (drawString/drawCentreString/drawChar/textWidth) renders with
 // it, so menus, headers, nav, buttons and the keyboard all use the smooth font and
 // its native umlaut glyphs. Big elements bump to a larger size and restore.
-void BibleInterface::setUiFont(uint8_t idx) { setUiFontEx(idx, false); }
+void BibleInterface::setUiFont(uint8_t idx) { setUiFontFam(idx, 0); }
+void BibleInterface::setUiFontEx(uint8_t idx, bool frak_title) { setUiFontFam(idx, frak_title ? 1 : 0); }
 
-// As setUiFont, but selects the Fraktur *title* family when frak_title is true —
-// used to render song/category/book titles of Fraktur songbooks in blackletter.
-void BibleInterface::setUiFontEx(uint8_t idx, bool frak_title) {
+// Load a UI VLW size onto tft from one of three families:
+//   0 = normal (DejaVu)   1 = Fraktur title (FRAKT_FONTS)   2 = Fraktur body (FRAK_FONTS)
+// The title family renders song/category/book titles of Fraktur songbooks in
+// blackletter; the body family matches the reading view (used for search snippets).
+void BibleInterface::setUiFontFam(uint8_t idx, uint8_t fam) {
     if (idx >= VLW_FONT_COUNT) idx = 2;
-    if (ui_font_idx == (int8_t)idx && ui_font_frak == frak_title) return;
-    const VlwFont* fam = frak_title ? FRAKT_FONTS : VLW_FONTS;
-    tft.loadFont(fam[idx].data);
-    g_ui_vlw    = fam[idx].data;
+    if (ui_font_idx == (int8_t)idx && ui_font_fam == fam) return;
+    const VlwFont* f = (fam == 2) ? FRAK_FONTS : (fam == 1) ? FRAKT_FONTS : VLW_FONTS;
+    tft.loadFont(f[idx].data);
+    g_ui_vlw    = f[idx].data;
     ui_font_idx = (int8_t)idx;
-    ui_font_frak = frak_title;
+    ui_font_fam = fam;
 }
 
 // Fraktur is used ONLY for song titles and song text — never category or songbook
@@ -1083,6 +1086,15 @@ bool BibleInterface::headerFraktur() const {
 }
 bool BibleInterface::rowsFraktur() const {
     return g_read_fraktur && mode == MODE_SONGS && view == BV_BOOK_SELECT;
+}
+// A songbook is a Fraktur book iff its file stem ends in "_fraktur" (enforced by
+// generate_songs_xml.py). Lets search render/scope by Fraktur-ness without opening
+// each .toc (which would clobber g_read_fraktur as a side effect).
+bool BibleInterface::transIsFraktur(uint8_t t) const {
+    if (mode != MODE_SONGS || t >= trans_count) return false;
+    const char* s = trans_stems[t];
+    size_t n = strlen(s);
+    return n >= 8 && strcmp(s + n - 8, "_fraktur") == 0;
 }
 
 void BibleInterface::drawReadingLines() {
@@ -4481,6 +4493,10 @@ void BibleInterface::drawSearchResultRow(int16_t y_px, uint16_t idx, bool sel) {
             snprintf(ref, sizeof(ref), "%s %d:%d",
                      bookDisplay(r.book), (int)r.chapter, (int)r.verse);
         }
+        // Fraktur song titles render in the blackletter title font; songbook-name
+        // refs (cross-book "All" hits) stay in the normal font — names never Fraktur.
+        bool refIsSongTitle = (mode == MODE_SONGS && r.trans == cur_trans);
+        setUiFontFam(1, (refIsSongTitle && transIsFraktur(r.trans)) ? 1 : 0);
         tft.setTextColor(fg(), bg_col);
         int16_t rx = PADDING;
         for (const char* p = ref; *p && rx < row_w - 4; p++)
@@ -4564,8 +4580,11 @@ void BibleInterface::drawSearchResultRow(int16_t y_px, uint16_t idx, bool sel) {
     }
 
     tft.setTextDatum(TL_DATUM);
-    setUiFont(0);                          // Tiny for the snippet (one size smaller)
-    const int16_t tiny_lh = (int16_t)VLW_FONTS[0].lineH;
+    // Snippet is song body text — render Fraktur books in the blackletter body font
+    // (matches the reading view; makes ligatures like tz display correctly).
+    bool snipFrak = (mode == MODE_SONGS && transIsFraktur(search_results[idx].trans));
+    setUiFontFam(0, snipFrak ? 2 : 0);     // Tiny for the snippet (one size smaller)
+    const int16_t tiny_lh = (int16_t)(snipFrak ? FRAK_FONTS[0].lineH : VLW_FONTS[0].lineH);
     const size_t  slen    = strlen(disp);  // disp and snip share indices (1 byte each)
 
     // Pass 1: mark which snippet characters fall inside a matched token.
@@ -5470,9 +5489,15 @@ bool BibleInterface::searchSongsAll(const char* query) {
     tft.drawRoundRect(cbtn_x, cbtn_y, CBTN_W, CBTN_H, 4, dim_fg());
     drawSmallCentered("Cancel", (int16_t)(scrW() / 2), cbtn_y, CBTN_H, fg(), hdr_bg());
 
+    // A Fraktur search stays within Fraktur songbooks (and a normal search within
+    // normal ones) — the two use different glyph encodings, so mixing them would
+    // render garbled. Match the songbook the user searched from.
+    const bool want_frak = transIsFraktur(saved_trans);
+
     bool cancelled = false;
     for (uint8_t t = 0; t < trans_count && !cancelled &&
                         search_result_count < BIBLE_MAX_SEARCH_RESULTS; t++) {
+        if (transIsFraktur(t) != want_frak) continue;   // don't cross the Fraktur/normal line
         if (!loadToc(trans_stems[t])) continue;   // need this file's codes
         char path[64];
         snprintf(path, sizeof(path), "%s/%s.xml", basePath(), trans_stems[t]);

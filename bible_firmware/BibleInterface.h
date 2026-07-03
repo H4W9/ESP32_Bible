@@ -175,7 +175,7 @@ private:
     int8_t      read_font_loaded;  // VLW size index currently loaded in line_spr (-1 = none)
     bool        read_font_frak;    // true if the loaded reading font is the Fraktur family
     int8_t      ui_font_idx;       // VLW size index currently loaded on tft for the UI (-1 = none)
-    bool        ui_font_frak;      // true when the Fraktur title family is loaded on tft
+    uint8_t     ui_font_fam;       // UI font family on tft: 0=normal 1=Fraktur-title 2=Fraktur-body
 
     // ── Navigation position ───────────────────────────────────────────────
     uint8_t  cur_sec;
@@ -378,8 +378,10 @@ private:
     void loadReadingFont();   // (re)load the VLW font for font_num into line_spr
     void setUiFont(uint8_t idx);  // load a UI VLW size onto tft (menus/chrome/keyboard)
     void setUiFontEx(uint8_t idx, bool frak_title);  // normal or Fraktur-title family
+    void setUiFontFam(uint8_t idx, uint8_t fam);     // fam: 0=normal 1=Fraktur-title 2=Fraktur-body
     bool headerFraktur() const;   // reading-view song-title header → Fraktur
     bool rowsFraktur() const;     // song-list (BV_BOOK_SELECT) rows → Fraktur
+    bool transIsFraktur(uint8_t t) const;  // songbook t is a Fraktur book (stem "*_fraktur")
 
     // ── Colors ────────────────────────────────────────────────────────────
     uint16_t fg()      const;

@@ -255,11 +255,16 @@ static void drawTextArea(TFT_eSPI& tft, uint16_t fg, uint16_t bg,
     // have room even without a title line.
     int16_t y = 7;
     if (title && title[0]) {
+        // Title is a fixed UI prompt ("Search Songs:") — always the normal font,
+        // never Fraktur, even for a Fraktur songbook.
+        tft.loadFont(g_kb_font_main);
         tft.setTextColor(TFT_GREEN, bg);
         tft.drawString(title, 4, y, 2);
         y += 22;
     }
 
+    // The typed text previews in the active font (Fraktur for a Fraktur songbook).
+    tft.loadFont(g_kb_main_font);
     tft.setTextColor(fg, bg);
     // Draw the buffer with the loaded smooth UI font. Private umlaut codes map to
     // their real Unicode glyph; drawGlyph advances the cursor for us.
@@ -338,12 +343,16 @@ static void drawKeyboard(TFT_eSPI& tft, uint16_t fg, uint16_t bg,
             uint16_t caps_fg = caps ? (uint16_t)TFT_BLACK : key_fg;
             tft.fillRect(cx, rowY, cw2, cH, caps_bg);
             tft.drawRect(cx, rowY, cw2, cH, bdr);
+            tft.loadFont(g_kb_font_main);   // CAPS is a function key — normal font
             tft.setTextColor(caps_fg, caps_bg);
             tft.drawCentreString(caps ? "caps" : "CAPS", cx + cW, rowY + (cH - 16) / 2, 2);
         }
     }
 
     // ── Row 4: control row ────────────────────────────────────────────────
+    // Function keys (X, SYM/ABC, SPC, OK) and the umlaut keys stay in the normal
+    // font even for a Fraktur songbook — only the letter/symbol keys are Fraktur.
+    tft.loadFont(g_kb_font_main);
     int16_t rowY = kY + 4 * cH;
 
     int16_t ctrlY = rowY + (cH - 16) / 2;   // top of font-2 text, vertically centred in row
@@ -403,6 +412,8 @@ static void drawKeyboard(TFT_eSPI& tft, uint16_t fg, uint16_t bg,
     tft.drawRect(9*cW, rowY, cW, cH, bdr);
     tft.setTextColor((uint16_t)TFT_BLACK, (uint16_t)0x07E0);
     tft.drawCentreString("OK", 9*cW + cW/2, ctrlY, 2);
+
+    tft.loadFont(g_kb_main_font);   // restore active font for the typed-text preview
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
