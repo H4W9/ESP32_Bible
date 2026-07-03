@@ -5182,10 +5182,13 @@ bool BibleInterface::openSearchKeyboard() {
     } else if (mode == MODE_SONGS) {
         static const char* const FIND[3] = { "All", "Title", "Body" };
         if (srch_scope > 2) srch_scope = 0;
+        // Fraktur songbook: render the keyboard in the blackletter font (matched
+        // size to g_kb_font_main = VLW_FONTS[2]) with the ligature symbol page.
+        const uint8_t* frak = g_read_fraktur ? FRAK_FONTS[2].data : nullptr;
         ok = bibleKeyboardInput(tft, fg(), bg(), search_query, BIBLE_SEARCH_QUERY_LEN,
                                 kb_title, &srch_partial_match, &srch_ignore_punct,
                                 &srch_scope, "Find:", FIND, 3,
-                                names, trans_count, &dsel, pick_label);
+                                names, trans_count, &dsel, pick_label, frak);
     } else {  // Bible — default scope row (Bible / Section / Book) + translation picker
         ok = bibleKeyboardInput(tft, fg(), bg(), search_query, BIBLE_SEARCH_QUERY_LEN,
                                 kb_title, &srch_partial_match, &srch_ignore_punct,

@@ -38,6 +38,18 @@ static const char ROW1_SYM[] = "`~-_=+[]{}";
 static const char ROW2_SYM[] = "\\|;:'\"<>";
 static const char ROW3_SYM[] = ",./?\0\0\0\0";
 
+// Fraktur symbol page — used only when a Fraktur songbook is open. Exposes the
+// blackletter ligatures and German typographic marks so they can be searched.
+// Bytes emitted match verse-storage encoding so the search compares directly:
+//   '#'=long-s ſ  '|'=tz  0xA1=ch  0xBF=ck  0xB4=´
+//   0x87=„ 0x88=" 0x89=‚ 0x8A=' 0x8B=' 0x8C=– 0x8D=— 0x8E=…
+static const char FROW0_SYM[] = { '#', '|', (char)0xA1, (char)0xBF, (char)0xB4,
+                                  '.', ',', '?', 0 };                 // ſ tz ch ck ´ . , ?
+static const char FROW1_SYM[] = { (char)0x87, (char)0x88, (char)0x89, (char)0x8A,
+                                  (char)0x8B, (char)0x8C, (char)0x8D, (char)0x8E, 0 }; // „ " ‚ ' ' – — …
+static const char FROW2_SYM[] = "!?-()'\":";                          // ! ? - ( ) ' " :
+static const char FROW3_SYM[] = "@&*+=_;/";                           // @ & * + = _ ; /
+
 // Control row (row 4) columns:
 //  0 = CANCEL   1 = SYM/ABC   2 = ä/Ä   3 = ö/Ö   4 = ü/Ü   5 = ß
 //  6-7 = SPACE (2 cols)   8 = BKSP   9 = OK
@@ -58,6 +70,29 @@ static inline int16_t cellH(uint16_t sh) { return (int16_t)(kbH(sh) / KB_ROWS); 
 static const int16_t OPT_ROW_H = 28;  // px per option row
 static int16_t g_opt_rows = 3;        // set by bibleKeyboardInput() per mode
 static inline int16_t optH()          { return OPT_ROW_H * g_opt_rows; }
+
+// Active "main" font for keys + typed text. Normally the shared UI font, but a
+// Fraktur songbook swaps in the blackletter font so keys/text preview correctly.
+static const uint8_t* g_kb_main_font = nullptr;
+static bool           g_frak_kb      = false;   // Fraktur symbol page + glyph mapping
+
+// Verse-storage private byte → Unicode for rendering, mirroring
+// BibleInterface::vlwPrivToUnicode(). ASCII and raw Latin-1 (0xA1 ch, 0xBF ck,
+// 0xB4 ´) pass through — the Fraktur font maps them to blackletter ligatures.
+static uint16_t kbPrivToUnicode(uint8_t c) {
+    switch (c) {
+        case 0x80: return 0x00C4; case 0x81: return 0x00E4;
+        case 0x82: return 0x00D6; case 0x83: return 0x00F6;
+        case 0x84: return 0x00DC; case 0x85: return 0x00FC;
+        case 0x86: return 0x00DF;
+        case 0x87: return 0x201E; case 0x88: return 0x201C;
+        case 0x89: return 0x201A; case 0x8A: return 0x2018;
+        case 0x8B: return 0x2019; case 0x8C: return 0x2013;
+        case 0x8D: return 0x2014; case 0x8E: return 0x2026;
+        case 0x8F: return 0x2030;
+        default:   return c;
+    }
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Touch polling (raw, no debounce — debounce is handled by the main loop)
@@ -87,10 +122,17 @@ static bool kb_rawTouch(TFT_eSPI& tft, uint16_t* x, uint16_t* y) {
 // Drawing helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
-// UTF-8 encode a Latin-1 code point (0x80..0xFF → 2 bytes) into a 3-byte buffer.
-static void kbUtf8(uint16_t uni, char out[3]) {
+// UTF-8 encode a code point (up to U+FFFF → 3 bytes) into a 4-byte buffer.
+static void kbUtf8(uint16_t uni, char out[4]) {
     if (uni < 0x80) { out[0] = (char)uni; out[1] = 0; }
-    else { out[0] = (char)(0xC0 | (uni >> 6)); out[1] = (char)(0x80 | (uni & 0x3F)); out[2] = 0; }
+    else if (uni < 0x800) {
+        out[0] = (char)(0xC0 | (uni >> 6));
+        out[1] = (char)(0x80 | (uni & 0x3F)); out[2] = 0;
+    } else {
+        out[0] = (char)(0xE0 | (uni >> 12));
+        out[1] = (char)(0x80 | ((uni >> 6) & 0x3F));
+        out[2] = (char)(0x80 | (uni & 0x3F)); out[3] = 0;
+    }
 }
 
 // Draw an umlaut key label — the real glyph from the loaded smooth UI font (which
@@ -104,7 +146,7 @@ static void drawUmlautLabel(TFT_eSPI& tft,
         case 'O': uni = 0xD6; break; case 'o': uni = 0xF6; break;
         case 'U': uni = 0xDC; break; default:  uni = 0xFC; break;   // u/U
     }
-    char u8[3]; kbUtf8(uni, u8);
+    char u8[4]; kbUtf8(uni, u8);
     int16_t ty = ky + (ch - 16) / 2;
     tft.setTextColor(key_fg, key_bg);
     tft.drawCentreString(u8, kx + cw / 2, ty, 2);
@@ -114,7 +156,7 @@ static void drawUmlautLabel(TFT_eSPI& tft,
 static void drawSzligLabel(TFT_eSPI& tft,
                             int16_t kx, int16_t ky, int16_t cw, int16_t ch,
                             uint16_t key_fg, uint16_t key_bg) {
-    char u8[3]; kbUtf8(0xDF, u8);
+    char u8[4]; kbUtf8(0xDF, u8);
     int16_t ty = ky + (ch - 16) / 2;
     tft.setTextColor(key_fg, key_bg);
     tft.drawCentreString(u8, kx + cw / 2, ty, 2);
@@ -196,7 +238,7 @@ static void drawOptions(TFT_eSPI& tft, uint16_t fg, uint16_t bg,
     if (has_scope) { drawScopeRow(rY);                    rY += OPT_ROW_H; }
     if (has_trans) { drawPickRow(rY, trans_label ? trans_label : "Trans:", trans_name); rY += OPT_ROW_H; }
 
-    tft.loadFont(g_kb_font_main);   // restore the normal UI size
+    tft.loadFont(g_kb_main_font);   // restore the active main font (UI or Fraktur)
 }
 
 // Draw the text area (top half of screen minus options strip): title + current buffer.
@@ -224,15 +266,7 @@ static void drawTextArea(TFT_eSPI& tft, uint16_t fg, uint16_t bg,
     tft.setCursor(4, y);
     const char* p = buffer ? buffer : "";
     for (; *p && tft.getCursorX() < (int16_t)scrW - 10; p++) {
-        uint8_t c = (uint8_t)*p;
-        uint16_t uni;
-        switch (c) {
-            case 0x80: uni = 0xC4; break; case 0x81: uni = 0xE4; break;
-            case 0x82: uni = 0xD6; break; case 0x83: uni = 0xF6; break;
-            case 0x84: uni = 0xDC; break; case 0x85: uni = 0xFC; break;
-            case 0x86: uni = 0xDF; break; default:   uni = c;    break;
-        }
-        tft.drawGlyph(uni);
+        tft.drawGlyph(kbPrivToUnicode((uint8_t)*p));
     }
     int16_t x = tft.getCursorX();
     // Blinking cursor bar
@@ -256,7 +290,9 @@ static void drawKeyboard(TFT_eSPI& tft, uint16_t fg, uint16_t bg,
     tft.fillRect(0, kY, (int16_t)scrW, kH, key_bg);
 
     const char* alphaRows[4] = { ROW0_ALPHA, ROW1_ALPHA, ROW2_ALPHA, ROW3_ALPHA };
-    const char* symRows[4]   = { ROW0_SYM,   ROW1_SYM,   ROW2_SYM,   ROW3_SYM   };
+    const char* symRows[4];
+    if (g_frak_kb) { symRows[0]=FROW0_SYM; symRows[1]=FROW1_SYM; symRows[2]=FROW2_SYM; symRows[3]=FROW3_SYM; }
+    else           { symRows[0]=ROW0_SYM;  symRows[1]=ROW1_SYM;  symRows[2]=ROW2_SYM;  symRows[3]=ROW3_SYM;  }
     const char** rows = (layout == KB_ALPHA) ? alphaRows : symRows;
 
     // ── Rows 0-3: character rows ──────────────────────────────────────────
@@ -281,11 +317,17 @@ static void drawKeyboard(TFT_eSPI& tft, uint16_t fg, uint16_t bg,
             if (layout == KB_ALPHA && r >= 1 && c >= 'a' && c <= 'z' && caps)
                 c = (char)(c - 'a' + 'A');
 
-            // Use font 2 (16px) for character keys — single character always fits.
-            char c_str[2] = { c, '\0' };
             int16_t ty = rowY + (cH - 16) / 2;
             tft.setTextColor(key_fg, key_bg);
-            tft.drawCentreString(c_str, kx + cW / 2, ty, 2);
+            if ((uint8_t)c >= 0x80) {
+                // Private/Latin-1 byte (umlaut, ligature, typographic mark) → real glyph.
+                char u8[4]; kbUtf8(kbPrivToUnicode((uint8_t)c), u8);
+                tft.drawCentreString(u8, kx + cW / 2, ty, 2);
+            } else {
+                // Font 2 (16px) for character keys — single character always fits.
+                char c_str[2] = { c, '\0' };
+                tft.drawCentreString(c_str, kx + cW / 2, ty, 2);
+            }
         }
 
         // CAPS key occupies cols 8-9 in alpha layout row 3
@@ -390,7 +432,9 @@ static KbResult handleKbTouch(uint16_t tx, uint16_t ty,
     if (row < 0 || row >= KB_ROWS) return KBR_NONE;
 
     const char* alphaRows[4] = { ROW0_ALPHA, ROW1_ALPHA, ROW2_ALPHA, ROW3_ALPHA };
-    const char* symRows[4]   = { ROW0_SYM,   ROW1_SYM,   ROW2_SYM,   ROW3_SYM   };
+    const char* symRows[4];
+    if (g_frak_kb) { symRows[0]=FROW0_SYM; symRows[1]=FROW1_SYM; symRows[2]=FROW2_SYM; symRows[3]=FROW3_SYM; }
+    else           { symRows[0]=ROW0_SYM;  symRows[1]=ROW1_SYM;  symRows[2]=ROW2_SYM;  symRows[3]=ROW3_SYM;  }
     const char** rows = (layout == KB_ALPHA) ? alphaRows : symRows;
 
     // ── Character rows 0-3 ───────────────────────────────────────────────
@@ -463,8 +507,15 @@ bool bibleKeyboardInput(TFT_eSPI& tft,
                         const char* const* dict_names,
                         uint8_t            dict_count,
                         uint8_t*           dict_sel,
-                        const char*        dict_label) {
+                        const char*        dict_label,
+                        const uint8_t*     frak_font) {
     if (!buffer || bufLen < 2) return false;
+
+    // Fraktur songbook: draw keys/typed text in the blackletter font and expose
+    // the ligature/typographic symbol page. Everything else uses the UI font.
+    g_frak_kb      = (frak_font != nullptr);
+    g_kb_main_font = frak_font ? frak_font : g_kb_font_main;
+    tft.loadFont(g_kb_main_font);
 
     uint16_t scrW      = (uint16_t)tft.width();
     uint16_t scrH      = (uint16_t)tft.height();
@@ -543,8 +594,10 @@ bool bibleKeyboardInput(TFT_eSPI& tft,
                     break;
                 case KBR_DONE:
                     drawTextArea(tft, fg, bg, scrW, scrH, title, buffer, show_opts);
+                    tft.loadFont(g_kb_font_main);   // restore UI font for later draws
                     return true;
                 case KBR_CANCEL:
+                    tft.loadFont(g_kb_font_main);   // restore UI font for later draws
                     return false;
                 case KBR_LAYOUT:
                     layout = (layout == KB_ALPHA) ? KB_SYMBOLS : KB_ALPHA;

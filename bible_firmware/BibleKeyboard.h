@@ -64,6 +64,10 @@ bool bibleKeyboardInput(TFT_eSPI& tft,
                         const char* const* dict_names = nullptr,
                         uint8_t            dict_count = 0,
                         uint8_t*           dict_sel   = nullptr,
-                        const char*        dict_label = nullptr);  // e.g. "Trans:" / "Book:" / "Dict:"
+                        const char*        dict_label = nullptr,  // e.g. "Trans:" / "Book:" / "Dict:"
+                        // When non-null, draw keys and typed text in this Fraktur (VLW)
+                        // font and switch the symbol page to the blackletter ligature /
+                        // typographic set. Used when a Fraktur songbook is open.
+                        const uint8_t*     frak_font  = nullptr);
 
 #endif // HAS_TOUCH
