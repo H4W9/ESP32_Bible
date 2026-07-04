@@ -342,8 +342,8 @@ void BibleInterface::RunSetup() {
     tft.init();
     setUiFont(2);   // load the UI smooth font (14px) so the whole UI renders with it
 
-    // Search results live in PSRAM/heap, not static .bss (the big verse/line/font
-    // buffers already fill internal SRAM). Allocate once at boot.
+    // Search results live in PSRAM/heap, not static .bss. Allocate once at boot.
+    // (The verse/line caches are moved to PSRAM just below for the same reason.)
     {
         size_t sr_sz = sizeof(BibleSearchResult) * BIBLE_MAX_SEARCH_RESULTS;
 #ifdef HAS_PSRAM
@@ -351,6 +351,24 @@ void BibleInterface::RunSetup() {
 #endif
         if (!search_results) search_results = (BibleSearchResult*)malloc(sr_sz);
         if (search_results) memset(search_results, 0, sr_sz);
+    }
+
+    // Verse/line caches → PSRAM (they are the largest buffers). Keeping them out of
+    // internal DRAM leaves room for the WiFi/BLE stacks used by VerseBroadcast.
+    // Indexing (verse_buf[i][j] / lines[i][j]) is unchanged — these are pointers to
+    // fixed-width rows. Falls back to malloc on no-PSRAM boards.
+    {
+        size_t vb_sz = (size_t)BIBLE_MAX_VERSES_CACHED * BIBLE_VERSE_BUF;
+        size_t ln_sz = (size_t)BIBLE_MAX_LINES        * BIBLE_LINE_BUF;
+        verse_buf = nullptr;  lines = nullptr;
+#ifdef HAS_PSRAM
+        verse_buf = (char(*)[BIBLE_VERSE_BUF])ps_malloc(vb_sz);
+        lines     = (char(*)[BIBLE_LINE_BUF]) ps_malloc(ln_sz);
+#endif
+        if (!verse_buf) verse_buf = (char(*)[BIBLE_VERSE_BUF])malloc(vb_sz);
+        if (!lines)     lines     = (char(*)[BIBLE_LINE_BUF]) malloc(ln_sz);
+        if (verse_buf) verse_buf[0][0] = 0;
+        if (lines)     lines[0][0]     = 0;
     }
 
 #ifdef HAS_CAP_TOUCH

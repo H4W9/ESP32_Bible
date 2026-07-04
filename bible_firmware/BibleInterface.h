@@ -224,14 +224,17 @@ private:
     int16_t   read_line;    // index of first visible wrapped line
 
     // ── Verse cache (one chapter at a time) ───────────────────────────────
-    char      verse_buf[BIBLE_MAX_VERSES_CACHED][BIBLE_VERSE_BUF];
+    // Big buffers live in PSRAM (allocated in RunSetup) — kept out of internal
+    // DRAM so WiFi/BLE (VerseBroadcast) and the SDK have room. Indexing is
+    // unchanged: verse_buf[i][j] / lines[i][j] work exactly as 2-D arrays.
+    char      (*verse_buf)[BIBLE_VERSE_BUF];   // [BIBLE_MAX_VERSES_CACHED] rows
     uint16_t  cached_book;
     uint16_t  cached_chap;
     uint8_t   cached_count;  // number of verses actually loaded
 
     // ── Wrapped text lines ────────────────────────────────────────────────
     // Format: "^N|text" where N is 1-based verse number (0 = continuation)
-    char      lines[BIBLE_MAX_LINES][BIBLE_LINE_BUF];
+    char      (*lines)[BIBLE_LINE_BUF];        // [BIBLE_MAX_LINES] rows
     uint16_t  line_count;
 
     // ── Translations ──────────────────────────────────────────────────────
