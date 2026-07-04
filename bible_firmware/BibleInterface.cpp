@@ -508,9 +508,7 @@ uint16_t BibleInterface::chromeFg() const {
            ? TFT_WHITE : FONT_COLOR_VAL[font_color_idx];
 }
 void BibleInterface::loadMenuChrome() {
-    Preferences p;
-    menu_font_color_idx = 0;
-    if (p.begin("menu", true)) { menu_font_color_idx = p.getUChar("fontcol", 0); p.end(); }
+    menu_font_color_idx = readU8("menu", "fontcol", 0);
     if (menu_font_color_idx >= FONT_COLOR_COUNT) menu_font_color_idx = 0;
 }
 bool BibleInterface::isNeon() const { return theme_idx == THEME_NEON; }
@@ -1374,15 +1372,13 @@ void BibleInterface::writeScoped(const char* key, uint8_t val) {
 // Load the scope's "look" settings into the live member vars (also previews the
 // scope on the settings screen). Brightness/orientation are global (excluded).
 void BibleInterface::loadScopeSettings() {
-    Preferences p;
-    bool ok = p.begin(scopeReadNs(settings_scope), true);
-    theme_idx      = ok ? p.getUChar("theme",    0) : 0;
-    accent_idx     = ok ? p.getUChar("accent",   0) : 0;
-    accent_def     = ok ? (p.getUChar("accentdef", 0) != 0) : false;
-    font_num       = ok ? p.getUChar("font",     3) : 3;
-    font_color_idx = ok ? p.getUChar("fontcol",  0) : 0;
-    vnum_color_idx = ok ? p.getUChar("vnumcol",  0) : 0;
-    if (ok) p.end();
+    const char* ns = scopeReadNs(settings_scope);
+    theme_idx      = readU8(ns, "theme",    0);
+    accent_idx     = readU8(ns, "accent",   0);
+    accent_def     = (readU8(ns, "accentdef", 0) != 0);
+    font_num       = readU8(ns, "font",     3);
+    font_color_idx = readU8(ns, "fontcol",  0);
+    vnum_color_idx = readU8(ns, "vnumcol",  0);
     if (theme_idx      >= THEME_COUNT)      theme_idx = 0;
     if (accent_idx     >= ACCENT_COUNT)     accent_idx = 0;
     if (font_num >= VLW_FONT_COUNT) font_num = 3;   // VLW reading-size index; 3 = Medium
@@ -1426,8 +1422,7 @@ void BibleInterface::scopeScanTrans() {
             }
     for (uint8_t i = 0; i < sc_trans_count; i++)
         transDisplayName(base, sc_trans[i], sc_trans_names[i], BIBLE_TRANS_DISP_LEN);
-    Preferences p; uint8_t cur = 0;
-    if (p.begin(scopeReadNs(settings_scope), true)) { cur = p.getUChar("trans", 0); p.end(); }
+    uint8_t cur = readU8(scopeReadNs(settings_scope), "trans", 0);
     sc_trans_cur = (cur < sc_trans_count) ? cur : 0;
 }
 
@@ -3045,6 +3040,15 @@ void BibleInterface::persistU8(const char* ns, const char* key, uint8_t val) {
         if (p.begin(ns, false)) { p.putUChar(key, val); p.end(); }
     }
 }
+// Read one setting from `ns` without a second handle on a namespace the member holds
+// open — a second (even read-only) open of that namespace can fail, which made saved
+// menu settings read back as defaults (i.e. "not persisting"). Mirrors persistU8.
+uint8_t BibleInterface::readU8(const char* ns, const char* key, uint8_t def) {
+    if (strcmp(prefs_ns, ns) == 0) return prefs.getUChar(key, def);
+    Preferences p;
+    if (p.begin(ns, true)) { uint8_t v = p.getUChar(key, def); p.end(); return v; }
+    return def;
+}
 void BibleInterface::bmPath(char* out, size_t n) const {
     snprintf(out, n, "%s/bookmarks.txt", basePath());
 }
@@ -4644,8 +4648,7 @@ void BibleInterface::saveBookIndex(const char* stem) {
 void BibleInterface::blInit() {
     // Brightness is GLOBAL (one value for the whole firmware), stored in the "menu"
     // namespace regardless of which mode adjusts it.
-    bl_idx = 10;
-    { Preferences mp; if (mp.begin("menu", true)) { bl_idx = mp.getUChar("bright", 10); mp.end(); } }
+    bl_idx = readU8("menu", "bright", 10);   // collision-safe (member may hold "menu")
     if (bl_idx >= 20) bl_idx = 19;
 #ifndef HAS_MINI_SCREEN
   #if ESP_ARDUINO_VERSION_MAJOR >= 3

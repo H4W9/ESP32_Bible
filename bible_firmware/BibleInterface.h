@@ -428,6 +428,7 @@ private:
     const char* nvsNamespace() const;                   // "bible" | "songs" | "dict"
     void        openNvs(const char* ns);                 // (re)open member prefs on ns, track it
     void        persistU8(const char* ns, const char* key, uint8_t val);  // collision-safe write
+    uint8_t     readU8(const char* ns, const char* key, uint8_t def);      // collision-safe read
     void        bmPath(char* out, size_t n) const;      // <base>/bookmarks.txt
     void        srchHistPath(char* out, size_t n) const;// <base>/srch_hist.txt
 
