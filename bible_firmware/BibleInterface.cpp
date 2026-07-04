@@ -303,7 +303,7 @@ BibleInterface::BibleInterface()
       cached_book(0xFFFF), cached_chap(0), cached_count(0),
       line_count(0), trans_count(0), bm_count(0), bm_sel(0), bm_scroll(0),
       bm_confirm_pending(false),
-      bcast_pending(false),
+      bcast_pending(false), reset_confirm_pending(false),
       search_hist_count(0), search_hist_sel(0),
       search_results(nullptr), search_result_count(0), search_res_sel(0),
       highlight_verse(0), reading_from_search(false),
@@ -327,6 +327,7 @@ BibleInterface::BibleInterface()
 #endif
 {
     prefs_ns[0] = '\0';   // no NVS namespace open yet (openNvs sets it)
+    sr_fwd_bx = sr_bwd_bx = sr_btn_y = 0;   // settings arrow hit-boxes (set on draw)
     memset(vbuf_y,        0, sizeof(vbuf_y));
     memset(vbuf_t,        0, sizeof(vbuf_t));
     trans_marq_str[0] = '\0';
@@ -389,7 +390,7 @@ void BibleInterface::RunSetup() {
     dark_mode  = THEMES[theme_idx].dark;
     accent_idx = prefs.getUChar("accent", 0);
     if (accent_idx >= ACCENT_COUNT) accent_idx = 0;
-    accent_def = (prefs.getUChar("accentdef", 0) != 0);
+    accent_def = (prefs.getUChar("accentdef", 1) != 0);   // default: Default highlight
     font_num   = 3;   // default reading size = Medium (VLW index)
     loadMenuChrome();
     font_color_idx = menu_font_color_idx;   // chrome/menu text follows the menu Font Color
@@ -881,8 +882,10 @@ void BibleInterface::redrawListContent(uint16_t item_count) {
     // Each row is rendered off-screen and blitted atomically for flicker-free
     // scrolling (like the reading/search views). If the sprite can't be allocated
     // (very low heap) we fall back to direct drawListRow (correct, but rippled).
+    // Sprite is 6px narrower than the screen so pushing rows never overwrites the
+    // scrollbar column — that overwrite-then-redraw was making the scrollbar flicker.
     TFT_eSprite row_spr(&tft);
-    bool use_spr = row_spr.createSprite(scrW(), (int16_t)itemH());
+    bool use_spr = row_spr.createSprite(scrW() - 6, (int16_t)itemH());
     if (use_spr) row_spr.setTextWrap(false, false);
     const uint8_t* spr_font = nullptr;   // track the sprite's loaded font to skip reloads
 
@@ -1237,6 +1240,9 @@ void BibleInterface::drawReadingLines() {
             }
         }
 
+        // Selection / search jump use the background highlight. Bookmarks are shown
+        // with an underline instead, so a bookmarked verse still reads as "selected"
+        // (highlight appears) when you tap it.
         uint16_t line_bg = bg();
         if (highlight_verse > 0 && cur_verse_num == highlight_verse)
             line_bg = hi_bg;
@@ -1244,10 +1250,7 @@ void BibleInterface::drawReadingLines() {
                  && cur_verse_num >= sel_verse_first
                  && cur_verse_num <= sel_verse_last)
             line_bg = hi_bg;
-        else if (bm_v1 > 0
-                 && cur_verse_num >= bm_v1
-                 && cur_verse_num <= bm_v2)
-            line_bg = hi_bg;
+        bool is_bookmarked = (bm_v1 > 0 && cur_verse_num >= bm_v1 && cur_verse_num <= bm_v2);
 
         line_spr.fillSprite(line_bg);
 
@@ -1281,6 +1284,9 @@ void BibleInterface::drawReadingLines() {
                 vlwPrivToUtf8(ln, u8, sizeof(u8));
                 line_spr.printToSprite(u8, strlen(u8));
             }
+            // Bookmark indicator: underline in the verse-number colour.
+            if (is_bookmarked)
+                line_spr.drawFastHLine(4, (int16_t)lh - 2, scrW() - 12, verse_num_fg());
         }
 
         // pushSprite respects the viewport set above, clipping partial lines
@@ -1339,18 +1345,20 @@ uint8_t BibleInterface::settingsScopeMode() const {
 }
 
 void BibleInterface::buildSettingsRows() {
+    bool is_menu = (settings_scope == 1);   // Main Menu scope
     uint8_t k = 0;
     set_rows[k++] = SR_SCOPE;
     if (settingsScopeMode() != 0xFF) set_rows[k++] = SR_TRANS;   // Translation near the top
     set_rows[k++] = SR_FONTSIZE;
     set_rows[k++] = SR_FONTCOL;
-    set_rows[k++] = SR_VNUMCOL;
+    if (!is_menu) set_rows[k++] = SR_VNUMCOL;   // no verse numbers on the Main Menu
     set_rows[k++] = SR_THEME;
     set_rows[k++] = SR_HIGHLIGHT;
     set_rows[k++] = SR_ORIENT;
     set_rows[k++] = SR_BRIGHT;
-    set_rows[k++] = SR_ABOUT;                                    // just above Boot
-    set_rows[k++] = SR_BOOT;
+    set_rows[k++] = SR_ABOUT;
+    if (settings_from_menu) set_rows[k++] = SR_RESET;   // factory reset — Main Menu only
+    if (is_menu) set_rows[k++] = SR_BOOT;               // Boot Marauder — Main Menu scope only
 #ifndef HAS_CAP_TOUCH
     set_rows[k++] = SR_CALIB;
 #endif
@@ -1375,7 +1383,7 @@ void BibleInterface::loadScopeSettings() {
     const char* ns = scopeReadNs(settings_scope);
     theme_idx      = readU8(ns, "theme",    0);
     accent_idx     = readU8(ns, "accent",   0);
-    accent_def     = (readU8(ns, "accentdef", 0) != 0);
+    accent_def     = (readU8(ns, "accentdef", 1) != 0);   // default: Default highlight
     font_num       = readU8(ns, "font",     3);
     font_color_idx = readU8(ns, "fontcol",  0);
     vnum_color_idx = readU8(ns, "vnumcol",  0);
@@ -1462,6 +1470,7 @@ void BibleInterface::redrawSettingsContent() {
         tft.fillRoundRect(bwd_bx, btn_y, btn_w, btn_h, btn_r, hdr_bg());
         tft.drawRoundRect(bwd_bx, btn_y, btn_w, btn_h, btn_r, edgeColor(eseed + 4, dim_fg()));
         drawChevron(bwd_bx, btn_y, btn_w, btn_h, false, font_fg());
+        if (sel) { sr_fwd_bx = fwd_bx; sr_bwd_bx = bwd_bx; sr_btn_y = btn_y; }
     };
     // Translation row: the value can be long, so instead of letting it push the
     // [<] button onto the "Translation" label, the two selectors bracket a fixed
@@ -1488,6 +1497,7 @@ void BibleInterface::redrawSettingsContent() {
         tft.fillRoundRect(bwd_bx, btn_y, btn_w, btn_h, btn_r, hdr_bg());
         tft.drawRoundRect(bwd_bx, btn_y, btn_w, btn_h, btn_r, edgeColor(eseed + 4, dim_fg()));
         drawChevron(bwd_bx, btn_y, btn_w, btn_h, false, font_fg());
+        if (sel) { sr_fwd_bx = fwd_bx; sr_bwd_bx = bwd_bx; sr_btn_y = btn_y; }
         // Value window between the inner edges of the two buttons.
         int16_t win_left = bwd_bx + btn_w + 4;
         int16_t win_w    = (fwd_bx - 4) - win_left;
@@ -1530,6 +1540,7 @@ void BibleInterface::redrawSettingsContent() {
         tft.fillRoundRect(minus_bx, btn_y, btn_w, btn_h, btn_r, hdr_bg());
         tft.drawRoundRect(minus_bx, btn_y, btn_w, btn_h, btn_r, edgeColor(eseed + 4, dim_fg()));
         drawPlusMinus(minus_bx, btn_y, btn_w, btn_h, false, font_fg());
+        if (sel) { sr_fwd_bx = plus_bx; sr_bwd_bx = minus_bx; sr_btn_y = btn_y; }
     };
 
     // Cleared each pass; transRow re-asserts it only if the Translation row is
@@ -1567,9 +1578,10 @@ void BibleInterface::redrawSettingsContent() {
             case SR_HIGHLIGHT: choiceRow(row_y, "Highlight", accent_def ? "Default" : ACCENT_NAMES[accent_idx], sel, 0); break;
             case SR_ORIENT:    choiceRow(row_y, "Orientation",   ORIENT_NAMES[orientation & 3],    sel, 0);              break;
             case SR_BRIGHT:    brightRow(row_y, sel); break;
-            case SR_ABOUT:     drawListRow(row_y, "About",           sel, false); break;
-            case SR_BOOT:      drawListRow(row_y, "Boot OTA_1",      sel, false); break;
-            case SR_CALIB:     drawListRow(row_y, "Calibrate Touch", sel, false); break;
+            case SR_ABOUT:     drawListRow(row_y, "About",            sel, false); break;
+            case SR_RESET:     drawListRow(row_y, "Reset to Defaults", sel, false); break;
+            case SR_BOOT:      drawListRow(row_y, "Boot OTA_1",       sel, false); break;
+            case SR_CALIB:     drawListRow(row_y, "Calibrate Touch",  sel, false); break;
         }
         int16_t bot = row_y + (int16_t)itemH();
         if (bot > last_bottom) last_bottom = bot;
@@ -1640,6 +1652,7 @@ void BibleInterface::drawSettings() {
     redrawSettingsContent();
     // Footer: show a "Menu" button (bottom-right) only when opened from a mode.
     drawNavBar("Back", "", settings_from_menu ? "" : "Menu");
+    if (reset_confirm_pending) drawResetConfirm();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1710,6 +1723,49 @@ void BibleInterface::drawConfirmDelete() {
     drawSmallCentered("Delete", del_x + half_w / 2, btn_y, btn_h, TFT_RED, hdr_bg());
 }
 
+// "Reset all settings?" confirmation overlay (same style as the delete popup).
+// Geometry is mirrored by the hit-test in handleSettingsInput().
+void BibleInterface::drawResetConfirm() {
+    int16_t pop_w = (int16_t)scrW() - 40;
+    int16_t pop_h = 92;
+    int16_t pop_x = 20;
+    int16_t pop_y = (int16_t)(scrH() / 2) - 46;
+
+    tft.fillRoundRect(pop_x,     pop_y,     pop_w,     pop_h,     6, bg());
+    tft.drawRoundRect(pop_x,     pop_y,     pop_w,     pop_h,     6, dim_fg());
+    tft.drawRoundRect(pop_x + 1, pop_y + 1, pop_w - 2, pop_h - 2, 6, dim_fg());
+
+    tft.setTextColor(fg(), bg());
+    tft.drawCentreString("Reset all settings?", scrW() / 2, pop_y + 8, 2);
+    tft.setTextColor(dim_fg(), bg());
+    tft.drawCentreString("Restores defaults & reboots", scrW() / 2, pop_y + 30, 1);
+
+    int16_t btn_y  = pop_y + 52;
+    int16_t btn_h  = 28;
+    int16_t half_w = pop_w / 2 - 6;
+    int16_t rst_x  = pop_x + pop_w / 2 + 2;
+    tft.fillRoundRect(pop_x + 4, btn_y, half_w, btn_h, 4, hdr_bg());
+    tft.drawRoundRect(pop_x + 4, btn_y, half_w, btn_h, 4, dim_fg());
+    drawSmallCentered("Cancel", pop_x + 4 + half_w / 2, btn_y, btn_h, TFT_WHITE, hdr_bg());
+    tft.fillRoundRect(rst_x, btn_y, half_w, btn_h, 4, hdr_bg());
+    tft.drawRoundRect(rst_x, btn_y, half_w, btn_h, 4, TFT_RED);
+    drawSmallCentered("Reset", rst_x + half_w / 2, btn_y, btn_h, TFT_RED, hdr_bg());
+}
+
+// Wipe every NVS namespace the firmware writes to (frees NVS space, restores factory
+// defaults), then reboot so everything reloads clean. Bookmarks / search history live
+// on the SD card, not NVS, so they are untouched.
+void BibleInterface::resetDefaults() {
+    static const char* const NS[] = { "menu", "bible", "songs", "dict" };
+    prefs.end(); prefs_ns[0] = 0;
+    for (uint8_t i = 0; i < 4; i++) {
+        Preferences p;
+        if (p.begin(NS[i], false)) { p.clear(); p.end(); }
+    }
+    delay(150);
+    esp_restart();
+}
+
 #ifdef ENABLE_VERSE_BROADCAST
 // "Broadcast this verse" popup — WiFi / Bluetooth on the top row, Cancel below.
 // Geometry is mirrored by the hit-test in handleReadingInput().
@@ -1736,15 +1792,15 @@ void BibleInterface::drawBroadcastMenu() {
     int16_t can_w  = pop_w - 8;
 
     tft.fillRoundRect(wifi_x, r1_y, half_w, btn_h, 4, hdr_bg());
-    tft.drawRoundRect(wifi_x, r1_y, half_w, btn_h, 4, dim_fg());
+    tft.drawRoundRect(wifi_x, r1_y, half_w, btn_h, 4, TFT_GREEN);   // WiFi = green
     drawSmallCentered("WiFi", wifi_x + half_w / 2, r1_y, btn_h, TFT_WHITE, hdr_bg());
 
     tft.fillRoundRect(bt_x, r1_y, half_w, btn_h, 4, hdr_bg());
-    tft.drawRoundRect(bt_x, r1_y, half_w, btn_h, 4, dim_fg());
+    tft.drawRoundRect(bt_x, r1_y, half_w, btn_h, 4, TFT_CYAN);      // Bluetooth = cyan
     drawSmallCentered("Bluetooth", bt_x + half_w / 2, r1_y, btn_h, TFT_WHITE, hdr_bg());
 
     tft.fillRoundRect(can_x, r2_y, can_w, btn_h, 4, hdr_bg());
-    tft.drawRoundRect(can_x, r2_y, can_w, btn_h, 4, dim_fg());
+    tft.drawRoundRect(can_x, r2_y, can_w, btn_h, 4, TFT_RED);       // Cancel = red
     drawSmallCentered("Cancel", can_x + can_w / 2, r2_y, btn_h, TFT_WHITE, hdr_bg());
 }
 
@@ -1817,12 +1873,16 @@ void BibleInterface::runVerseBroadcast(bool use_wifi) {
     tft.drawRoundRect(bx, by, bw, bh, 5, dim_fg());
     drawSmallCentered("Stop", scrW() / 2, by + 3, bh - 6, TFT_WHITE, TFT_RED);
 
+    // Live memory readout (D-RAM / PSRAM) below the Stop button.
+    int16_t mem_y = by + bh + 12;
+    drawMemUsage(mem_y);
+
     if (use_wifi) VerseBroadcast::wifiBegin();
     else          VerseBroadcast::bleBegin();
 
     bool     was_down = false;
     int      ci = 0;                 // current chunk (BLE cycles one name at a time)
-    uint32_t last_ble = 0;
+    uint32_t last_ble = 0, last_mem = 0;
     for (;;) {
         uint16_t px, py;
         bool pdn = pollTouch(&px, &py);
@@ -1832,6 +1892,7 @@ void BibleInterface::runVerseBroadcast(bool use_wifi) {
             int16_t dx = (int16_t)touch_down_x, dy = (int16_t)touch_down_y;
             if (dx >= bx && dx < bx + bw && dy >= by && dy < by + bh) break;   // Stop
         }
+        if (millis() - last_mem >= 1000) { drawMemUsage(mem_y); last_mem = millis(); }
 
         char label[VerseBroadcast::CHUNK_CAP + 8];   // "[N] " + chunk
         if (use_wifi) {
@@ -2364,6 +2425,29 @@ void BibleInterface::handleSettingsInput() {
     uint16_t tx, ty;
     bool down = pollTouch(&tx, &ty);
 
+    // ── Reset-to-Defaults confirmation ────────────────────────────────────────
+    if (reset_confirm_pending) {
+        if (down && !touch_was_down) {
+            touch_was_down = true;
+            touch_down_x = tx; touch_down_y = ty;
+        } else if (!down && touch_was_down) {
+            touch_was_down = false;
+            // Reset button bounds must match drawResetConfirm().
+            int16_t pop_w  = (int16_t)scrW() - 40;
+            int16_t pop_y  = (int16_t)(scrH() / 2) - 46;
+            int16_t btn_y  = pop_y + 52;
+            int16_t btn_h  = 28;
+            int16_t half_w = pop_w / 2 - 6;
+            int16_t rst_x  = 20 + pop_w / 2 + 2;
+            bool in_reset = ((int16_t)touch_down_x >= rst_x && (int16_t)touch_down_x < rst_x + half_w &&
+                             (int16_t)touch_down_y >= btn_y && (int16_t)touch_down_y < btn_y + btn_h);
+            reset_confirm_pending = false;
+            if (in_reset) resetDefaults();   // wipes NVS + reboots (never returns)
+            else          drawSettings();     // Cancel — repaint over the popup
+        }
+        return;
+    }
+
     // ── Finger just touched down ──────────────────────────────────────────────
     if (down && !touch_was_down) {
         touch_was_down  = true;
@@ -2432,8 +2516,16 @@ void BibleInterface::handleSettingsInput() {
         }
         if (menu_sel < 0 || menu_sel >= (int16_t)SETTINGS_N) return;
 
-        bool fwd = ((int16_t)touch_down_x >= (int16_t)scrW() - 32);  // [>] vs [<]
-        switch ((SettingRow)set_rows[menu_sel]) {
+        SettingRow sr = (SettingRow)set_rows[menu_sel];
+        // Action rows activate on any tap; value rows cycle ONLY when the tap lands
+        // on the [<] / [>] (or [-]/[+]) button, in the direction the arrow points.
+        bool is_action = (sr == SR_ABOUT || sr == SR_RESET || sr == SR_BOOT || sr == SR_CALIB);
+        int16_t dx = (int16_t)touch_down_x, dy = (int16_t)touch_down_y;
+        bool in_fwd = (dx >= sr_fwd_bx && dx < sr_fwd_bx + 28 && dy >= sr_btn_y && dy < sr_btn_y + 22);
+        bool in_bwd = (dx >= sr_bwd_bx && dx < sr_bwd_bx + 28 && dy >= sr_btn_y && dy < sr_btn_y + 22);
+        if (!is_action && !in_fwd && !in_bwd) return;   // tap wasn't on an arrow — ignore
+        bool fwd = in_fwd;
+        switch (sr) {
             case SR_SCOPE:
                 settings_scope = fwd ? (uint8_t)((settings_scope + 1) % 5)
                                      : (settings_scope == 0 ? 4 : settings_scope - 1);
@@ -2520,6 +2612,10 @@ void BibleInterface::handleSettingsInput() {
                 break;
             case SR_ABOUT:
                 goToAbout();
+                return;
+            case SR_RESET:
+                reset_confirm_pending = true;   // show confirmation overlay
+                drawResetConfirm();
                 return;
             case SR_BOOT:
                 bootMarauder();
@@ -3282,7 +3378,7 @@ void BibleInterface::goToMainMenu() {
     dark_mode  = THEMES[theme_idx].dark;
     accent_idx = prefs.getUChar("accent", 0);
     if (accent_idx >= ACCENT_COUNT) accent_idx = 0;
-    accent_def = (prefs.getUChar("accentdef", 0) != 0);
+    accent_def = (prefs.getUChar("accentdef", 1) != 0);   // default: Default highlight
     font_num   = 3;   // default reading size = Medium (VLW index)
     loadMenuChrome();
     font_color_idx = menu_font_color_idx;   // chrome/menu text follows the menu Font Color
@@ -4278,7 +4374,7 @@ void BibleInterface::loadState() {
     if (theme_idx >= THEME_COUNT) theme_idx = 0;
     dark_mode         = THEMES[theme_idx].dark;
     accent_idx        = prefs.getUChar("accent",    0);
-    accent_def        = (prefs.getUChar("accentdef", 0) != 0);
+    accent_def        = (prefs.getUChar("accentdef", 1) != 0);   // default: Default highlight
     srch_partial_match = prefs.getBool ("srch_part", true);
     srch_ignore_punct  = prefs.getBool ("srch_pnct", true);
     srch_scope         = prefs.getUChar("srch_scp",  0);

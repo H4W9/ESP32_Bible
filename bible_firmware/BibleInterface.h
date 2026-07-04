@@ -216,6 +216,9 @@ private:
     bool      settings_from_menu;  // opened from the main menu (vs a content mode)
     uint8_t   set_rows[16];        // dynamic list of SettingRow kinds currently shown
     uint8_t   set_row_n;
+    // Arrow hit-boxes of the currently-selected value row (captured when drawn) so a
+    // tap only cycles when it lands on the [<] / [>] button, in that direction.
+    int16_t   sr_fwd_bx, sr_bwd_bx, sr_btn_y;
     char      sc_trans[BIBLE_MAX_TRANS][BIBLE_TRANS_LEN]; // scope's translation stems
     char      sc_trans_names[BIBLE_MAX_TRANS][BIBLE_TRANS_DISP_LEN]; // display names (umlaut codes)
     uint8_t   sc_trans_count;
@@ -254,6 +257,7 @@ private:
     int16_t   bm_scroll;
     bool      bm_confirm_pending;   // true while delete-confirmation popup is shown
     bool      bcast_pending;        // true while the verse-broadcast popup is shown
+    bool      reset_confirm_pending; // true while the factory-reset confirmation is shown
 
     // ── Search ────────────────────────────────────────────────────────────
     char             search_query[BIBLE_SEARCH_QUERY_LEN];
@@ -359,7 +363,7 @@ private:
     // Settings rows are dynamic (depend on Settings Scope + board), addressed by kind.
     enum SettingRow : uint8_t {
         SR_SCOPE, SR_TRANS, SR_FONTSIZE, SR_FONTCOL, SR_VNUMCOL,
-        SR_THEME, SR_HIGHLIGHT, SR_ORIENT, SR_BRIGHT, SR_ABOUT, SR_BOOT, SR_CALIB
+        SR_THEME, SR_HIGHLIGHT, SR_ORIENT, SR_BRIGHT, SR_ABOUT, SR_RESET, SR_BOOT, SR_CALIB
     };
     void     buildSettingsRows();        // fill set_rows[] for the current scope/board
     uint8_t  settingsScopeMode() const;  // MODE_* for a content-mode scope, else 0xFF
@@ -373,6 +377,8 @@ private:
     void drawBookmarks();
     void drawAbout();           // firmware/hardware info screen
     void drawConfirmDelete();   // overlay popup drawn on top of bookmark list
+    void drawResetConfirm();    // "Reset all settings?" confirmation overlay
+    void resetDefaults();       // wipe all firmware NVS, restore factory defaults
     void drawBroadcastMenu();   // "Broadcast verse" popup (WiFi / Bluetooth / Cancel)
     void runVerseBroadcast(bool use_wifi);  // blocking broadcast screen until Stop
     void drawSearchInput();
