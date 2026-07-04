@@ -68,6 +68,15 @@ jobs:
           arduino-cli config add board_manager.additional_urls \
             https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json
 
+      # ── 3b. NimBLE-Arduino (needed by VerseBroadcast.cpp) ──────────────────
+      # Installed into the user libraries dir where arduino-cli compile finds it
+      # automatically (unlike the bundled TFT_eSPI, which is passed via --library).
+      # Runs every build (the ~/Arduino libraries dir isn't part of the core cache).
+      - name: Install NimBLE-Arduino
+        run: |
+          arduino-cli lib update-index
+          arduino-cli lib install "NimBLE-Arduino"
+
       # ── 4. Per-board configuration ─────────────────────────────────────────
       # Patch configs.h (board #define) and User_Setup_Select.h (TFT driver
       # include) for this matrix entry, then copy the correct partitions.csv.
