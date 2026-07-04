@@ -326,6 +326,7 @@ BibleInterface::BibleInterface()
     , batt_ok(false), batt_pct(-1), batt_ms(0)
 #endif
 {
+    prefs_ns[0] = '\0';   // no NVS namespace open yet (openNvs sets it)
     memset(vbuf_y,        0, sizeof(vbuf_y));
     memset(vbuf_t,        0, sizeof(vbuf_t));
     trans_marq_str[0] = '\0';
@@ -378,7 +379,7 @@ void BibleInterface::RunSetup() {
     // Menu-level settings live in their own NVS namespace ("menu"): appearance of
     // the main menu, the global screen orientation, plus the hardware touch
     // calibration. Each content mode opens its own namespace in enterMode().
-    prefs.begin("menu", false);
+    openNvs("menu");
     orientation = prefs.getUChar("orient", 0);
     if (orientation > 3) orientation = 0;
     applyOrientation();                 // global 0-3 orientation — set before first draw
@@ -916,7 +917,7 @@ void BibleInterface::redrawListContent(uint16_t item_count) {
                 text = pageLabel(idx); sel = (idx == (int16_t)menu_sel); has_arrow = false; break;
             case BV_BOOKMARKS:
                 text = bookmarks[idx].label; sel = (idx == (int16_t)bm_sel); has_arrow = false;
-                row_frak = (mode == MODE_SONGS && transIsFraktur(bookmarks[idx].trans)); break;
+                row_frak = bookmarkFraktur(idx); break;
             case BV_SEARCH_INPUT:
                 text = search_hist[idx]; sel = (idx == (int16_t)search_hist_sel); has_arrow = false;
                 row_frak = search_hist_frak[idx]; break;
@@ -1158,6 +1159,17 @@ bool BibleInterface::transIsFraktur(uint8_t t) const {
     size_t n = strlen(s);
     return n >= 8 && strcmp(s + n - 8, "_fraktur") == 0;
 }
+// A bookmark renders in the Fraktur font iff its songbook is Fraktur. Decided from
+// the stored stem (robust to index shifts); legacy bookmarks fall back to trans.
+bool BibleInterface::bookmarkFraktur(uint8_t idx) const {
+    if (mode != MODE_SONGS) return false;
+    const char* s = bookmarks[idx].stem;
+    if (s[0]) {
+        size_t n = strlen(s);
+        return n >= 8 && strcmp(s + n - 8, "_fraktur") == 0;
+    }
+    return transIsFraktur(bookmarks[idx].trans);
+}
 
 void BibleInterface::drawReadingLines() {
     loadReadingFont();
@@ -1202,8 +1214,10 @@ void BibleInterface::drawReadingLines() {
     // Bookmark verse ranges are highlighted the same as search/selection highlights.
     uint8_t bm_v1 = 0, bm_v2 = 0;
     for (uint8_t k = 0; k < bm_count; k++) {
+        // Scope to the current songbook (book indices repeat across songbooks).
         if (bookmarks[k].book == cur_book && bookmarks[k].chapter == cur_chapter
-                && bookmarks[k].verse_first > 0) {
+                && bookmarks[k].verse_first > 0
+                && (mode == MODE_BIBLE || bookmarks[k].trans == cur_trans)) {
             bm_v1 = bookmarks[k].verse_first;
             bm_v2 = bookmarks[k].verse_last;
             break;  // show first matching range only
@@ -1349,13 +1363,12 @@ void BibleInterface::buildSettingsRows() {
 // (Global = all modes + menu; otherwise just the scope's namespace).
 void BibleInterface::writeScoped(const char* key, uint8_t val) {
     static const char* const ALL[] = { "bible", "songs", "dict", "menu" };
-    Preferences p;
-    if (settings_scope == 0) {            // Global
-        for (uint8_t i = 0; i < 4; i++)
-            if (p.begin(ALL[i], false)) { p.putUChar(key, val); p.end(); }
-    } else {
-        if (p.begin(scopeReadNs(settings_scope), false)) { p.putUChar(key, val); p.end(); }
-    }
+    // persistU8 avoids the second-RW-open collision that silently dropped writes to
+    // the namespace the member `prefs` already holds (e.g. "menu" in the Main Menu).
+    if (settings_scope == 0)             // Global → every mode + menu
+        for (uint8_t i = 0; i < 4; i++) persistU8(ALL[i], key, val);
+    else
+        persistU8(scopeReadNs(settings_scope), key, val);
 }
 
 // Load the scope's "look" settings into the live member vars (also previews the
@@ -1651,7 +1664,7 @@ void BibleInterface::drawBookmarks() {
         uint8_t idx = bm_scroll + i;
         bool sel = idx == (uint8_t)bm_sel;
         // A bookmark label is a song title — render Fraktur if its songbook is.
-        setUiFontEx(2, mode == MODE_SONGS && transIsFraktur(bookmarks[idx].trans));
+        setUiFontEx(2, bookmarkFraktur(idx));
         drawListRow(contentY() + i * itemH(), bookmarks[idx].label, sel, false);
     }
     setUiFont(2);   // restore normal UI font for scrollbar/nav
@@ -1786,7 +1799,10 @@ void BibleInterface::runVerseBroadcast(bool use_wifi) {
     if (!text[0]) return;
 
     static char chunks[VerseBroadcast::MAX_CHUNKS][VerseBroadcast::CHUNK_CAP];
-    int nchunks = VerseBroadcast::splitChunks(text, chunks, VerseBroadcast::MAX_CHUNKS);
+    // Leave 6 bytes of headroom in each chunk for the "[N] " reading-order prefix
+    // added at send time (keeps SSID/BLE-name length within limits).
+    int nchunks = VerseBroadcast::splitChunks(text, chunks, VerseBroadcast::MAX_CHUNKS,
+                                              VerseBroadcast::CHUNK_BYTES - 6);
     if (nchunks <= 0) return;
 
     // Stop screen.
@@ -1822,14 +1838,20 @@ void BibleInterface::runVerseBroadcast(bool use_wifi) {
             if (dx >= bx && dx < bx + bw && dy >= by && dy < by + bh) break;   // Stop
         }
 
+        char label[VerseBroadcast::CHUNK_CAP + 8];   // "[N] " + chunk
         if (use_wifi) {
-            // Beacon-spam every SSID each pass so they all appear in scans.
-            for (int i = 0; i < nchunks; i++) VerseBroadcast::wifiSendSSID(chunks[i]);
+            // Beacon-spam every SSID each pass so they all appear in scans. The
+            // "[N] " prefix lets you read them back in order from the scan list.
+            for (int i = 0; i < nchunks; i++) {
+                snprintf(label, sizeof(label), "[%d] %s", i + 1, chunks[i]);
+                VerseBroadcast::wifiSendSSID(label);
+            }
         } else {
             // BLE advertises one name at a time — dwell, then rotate.
             uint32_t now = millis();
             if (now - last_ble >= 600) {
-                VerseBroadcast::bleSetName(chunks[ci]);
+                snprintf(label, sizeof(label), "[%d] %s", ci + 1, chunks[ci]);
+                VerseBroadcast::bleSetName(label);
                 ci = (ci + 1) % nchunks;
                 last_ble = now;
             }
@@ -2430,9 +2452,7 @@ void BibleInterface::handleSettingsInput() {
                 if (sc_trans_count > 1) {
                     sc_trans_cur = fwd ? (uint8_t)((sc_trans_cur + 1) % sc_trans_count)
                                        : (sc_trans_cur == 0 ? sc_trans_count - 1 : sc_trans_cur - 1);
-                    { Preferences p;
-                      if (p.begin(scopeReadNs(settings_scope), false)) {
-                          p.putUChar("trans", sc_trans_cur); p.end(); } }
+                    writeScoped("trans", sc_trans_cur);   // scope-only (SR_TRANS never Global)
                     // If editing the active mode's own scope, switch it live too.
                     if (!settings_from_menu && settingsScopeMode() == mode) {
                         cur_trans = sc_trans_cur;
@@ -2489,11 +2509,10 @@ void BibleInterface::handleSettingsInput() {
                 redrawSettingsContent();
                 break;
             }
-            case SR_ORIENT:   // global (not scoped)
+            case SR_ORIENT:   // global (not scoped) — lives in "menu"
                 orientation = fwd ? (uint8_t)((orientation + 1) % ORIENT_COUNT)
                                   : (orientation == 0 ? ORIENT_COUNT - 1 : orientation - 1);
-                { Preferences mp;
-                  if (mp.begin("menu", false)) { mp.putUChar("orient", orientation); mp.end(); } }
+                persistU8("menu", "orient", orientation);
                 applyOrientation();
                 if (cached_count > 0) buildWrappedLines();
                 menu_scroll = 0; scroll_px = 0.f;
@@ -3007,6 +3026,25 @@ const char* BibleInterface::nvsNamespace() const {
         default:         return "bible";
     }
 }
+// (Re)open the member `prefs` handle on `ns` and remember which namespace it holds.
+// All member-prefs opens go through here so persistU8() can avoid a colliding second
+// RW open of the same namespace (which fails and silently dropped setting writes).
+void BibleInterface::openNvs(const char* ns) {
+    prefs.end();
+    prefs.begin(ns, false);
+    strncpy(prefs_ns, ns, sizeof(prefs_ns) - 1);
+    prefs_ns[sizeof(prefs_ns) - 1] = 0;
+}
+// Persist one setting to `ns` without colliding with the member handle: if `prefs`
+// already has that namespace open, write through it; otherwise use a fresh handle.
+void BibleInterface::persistU8(const char* ns, const char* key, uint8_t val) {
+    if (strcmp(prefs_ns, ns) == 0) {
+        prefs.putUChar(key, val);
+    } else {
+        Preferences p;
+        if (p.begin(ns, false)) { p.putUChar(key, val); p.end(); }
+    }
+}
 void BibleInterface::bmPath(char* out, size_t n) const {
     snprintf(out, n, "%s/bookmarks.txt", basePath());
 }
@@ -3233,8 +3271,7 @@ static const char* const MENU_LABELS[3] = { "Bible", "Songs", "Dictionary" };
 void BibleInterface::goToMainMenu() {
     stopFling();
     // Restore the menu's own appearance/namespace (board-global brightness lives here).
-    prefs.end();
-    prefs.begin("menu", false);
+    openNvs("menu");
     mode       = MODE_BIBLE;            // accessors unused at the menu
     theme_idx  = prefs.getUChar("theme", 0);
     if (theme_idx >= THEME_COUNT) theme_idx = 0;
@@ -3335,13 +3372,12 @@ void BibleInterface::handleMainMenuInput() {
 // Mode switching
 // ─────────────────────────────────────────────────────────────────────────────
 void BibleInterface::enterMode(ContentMode m) {
-    prefs.end();
     mode = m;
     freeRuntime();
     cached_book = 0xFFFF; cached_chap = 0; cached_count = 0;
     book_idx_valid = false;
 
-    prefs.begin(nvsNamespace(), false);
+    openNvs(nvsNamespace());
     loadState();                          // per-mode font/dark/accent/position/search
     // Brightness is global (set once at boot in blInit) — no per-mode re-apply.
     loadBookmarks();
@@ -3360,10 +3396,13 @@ void BibleInterface::enterMode(ContentMode m) {
         tft.setTextColor(dim_fg(), bg());
         tft.drawCentreString(where, scrW() / 2, scrH() / 2 + 6, 2);
         tft.drawCentreString("Tap to go back", scrW() / 2, scrH() / 2 + 30, 2);
-        // Stay on the menu state so a tap returns; do not auto-redraw over the message.
-        mode = MODE_BIBLE;
-        view = BV_MAIN_MENU;
-        needs_redraw = false;
+        // Block until a full tap (press + release), then redraw the main menu.
+        uint16_t tx, ty;
+        while (pollTouch(&tx, &ty)) { delay(10); yield(); }   // clear any held touch
+        while (!pollTouch(&tx, &ty)) { delay(10); yield(); }  // wait for a press
+        while (pollTouch(&tx, &ty)) { delay(10); yield(); }   // wait for release
+        touch_was_down = false;
+        goToMainMenu();   // reloads menu chrome, sets view + needs_redraw
         return;
     }
     if (cur_trans >= trans_count) cur_trans = 0;
@@ -3499,7 +3538,18 @@ void BibleInterface::addBookmarkCurrent() {
     bm.chapter     = cur_chapter;
     bm.verse_first = sel_verse_first;
     bm.verse_last  = sel_verse_last;
-    bm.trans       = cur_trans;   // used by Songs/Dict (book index is per-file)
+    bm.trans       = cur_trans;   // legacy fallback
+    // Stable identifiers (Songs/Dict): the songbook stem + the song's osisID code,
+    // so the bookmark still resolves after the songbook set/order changes.
+    if (mode == MODE_BIBLE) {
+        bm.stem[0] = 0;
+        bm.code[0] = 0;
+    } else {
+        strncpy(bm.stem, trans_stems[cur_trans], BIBLE_TRANS_LEN - 1);
+        bm.stem[BIBLE_TRANS_LEN - 1] = 0;
+        strncpy(bm.code, bookCode(cur_book), RT_CODE_LEN - 1);
+        bm.code[RT_CODE_LEN - 1] = 0;
+    }
 
     if (sel_verse_first > 0) {
         // Verse / range bookmark. Songs are single-chapter, so drop the chapter
@@ -3588,14 +3638,29 @@ void BibleInterface::addBookmarkCurrent() {
     needs_redraw = true;
 }
 void BibleInterface::jumpToBookmark(uint8_t bm_idx) {
-    // Songs/Dict bookmarks are translation-scoped — switch file and reload its
-    // structure if the bookmark belongs to a different translation than the one open.
-    if (mode != MODE_BIBLE && bookmarks[bm_idx].trans != cur_trans &&
-        bookmarks[bm_idx].trans < trans_count) {
-        cur_trans = bookmarks[bm_idx].trans;
-        if (!loadToc(trans_stems[cur_trans])) { goToMainMenu(); return; }
+    BibleBookmark& bm = bookmarks[bm_idx];
+    // Songs/Dict bookmarks are songbook-scoped. Resolve the songbook by its stable
+    // stem (falling back to the legacy trans index), switching/reloading the TOC if
+    // needed, then resolve the song by its stable osisID code (fallback: book index).
+    if (mode != MODE_BIBLE) {
+        int t = -1;
+        if (bm.stem[0]) {
+            for (uint8_t i = 0; i < trans_count; i++)
+                if (strcmp(trans_stems[i], bm.stem) == 0) { t = i; break; }
+        }
+        if (t < 0) t = (bm.trans < trans_count) ? (int)bm.trans : (int)cur_trans;
+        if ((uint8_t)t != cur_trans && t < (int)trans_count) {
+            cur_trans = (uint8_t)t;
+            if (!loadToc(trans_stems[cur_trans])) { goToMainMenu(); return; }
+        }
+        cur_book = bm.book;
+        if (bm.code[0]) {
+            for (uint16_t b = 0; b < numBooks(); b++)
+                if (strcmp(bookCode(b), bm.code) == 0) { cur_book = b; break; }
+        }
+    } else {
+        cur_book = bm.book;
     }
-    cur_book    = bookmarks[bm_idx].book;
     if (cur_book >= numBooks()) { goToSection(); return; }
     cur_chapter = bookmarks[bm_idx].chapter;
     cur_sec     = bookSection(cur_book);
@@ -4231,8 +4296,9 @@ void BibleInterface::saveBookmarks() {
     File f = SD.open(path, FILE_WRITE);
     if (!f) return;
     // Bible:        "book chapter verse_first verse_last label"   (canon-global book)
-    // Songs/Dict:   "T<trans> book chapter verse_first verse_last label"
-    //   The leading "T<n>" token marks a translation-scoped bookmark.
+    // Songs/Dict:   "T<stem>|<code> book chapter verse_first verse_last label"
+    //   The leading "T" token holds the stable songbook stem + song code. (Older
+    //   "T<number>" index files still load — see loadBookmarks — but are fragile.)
     for (uint8_t i = 0; i < bm_count; i++) {
         if (mode == MODE_BIBLE) {
             f.printf("%d %d %d %d %s\n",
@@ -4240,8 +4306,9 @@ void BibleInterface::saveBookmarks() {
                      bookmarks[i].verse_first, bookmarks[i].verse_last,
                      bookmarks[i].label);
         } else {
-            f.printf("T%d %d %d %d %d %s\n",
-                     bookmarks[i].trans, bookmarks[i].book, bookmarks[i].chapter,
+            f.printf("T%s|%s %d %d %d %d %s\n",
+                     bookmarks[i].stem, bookmarks[i].code,
+                     bookmarks[i].book, bookmarks[i].chapter,
                      bookmarks[i].verse_first, bookmarks[i].verse_last,
                      bookmarks[i].label);
         }
@@ -4260,12 +4327,24 @@ void BibleInterface::loadBookmarks() {
         line.trim();
         if (line.length() == 0) continue;
 
-        // Songs/Dict lines start with a "T<trans>" token; strip and remember it.
+        // Songs/Dict lines start with a "T..." token holding either the stable
+        // "<stem>|<code>" (new) or a bare "<trans>" index (legacy). Strip and remember.
         uint8_t bm_trans = 0;
-        if (line[0] == 'T' && line.length() > 1 && isdigit((unsigned char)line[1])) {
+        char    bm_stem[BIBLE_TRANS_LEN] = {0};
+        char    bm_code[RT_CODE_LEN]     = {0};
+        if (line[0] == 'T' && line.length() > 1 && line[1] != ' ') {
             int sp = line.indexOf(' ');
             if (sp < 0) continue;
-            bm_trans = (uint8_t)line.substring(1, sp).toInt();
+            String tok = line.substring(1, sp);   // "<stem>|<code>" or "<trans>"
+            int bar = tok.indexOf('|');
+            if (bar >= 0) {                        // new stable format
+                strncpy(bm_stem, tok.substring(0, bar).c_str(), BIBLE_TRANS_LEN - 1);
+                strncpy(bm_code, tok.substring(bar + 1).c_str(), RT_CODE_LEN - 1);
+                for (uint8_t t = 0; t < trans_count; t++)   // resolve trans for the fallback
+                    if (strcmp(trans_stems[t], bm_stem) == 0) { bm_trans = t; break; }
+            } else {                               // legacy index format
+                bm_trans = (uint8_t)tok.toInt();
+            }
             line = line.substring(sp + 1);
             line.trim();
         }
@@ -4307,6 +4386,10 @@ void BibleInterface::loadBookmarks() {
         bookmarks[bm_count].verse_first = v1;
         bookmarks[bm_count].verse_last  = v2;
         bookmarks[bm_count].trans       = bm_trans;
+        strncpy(bookmarks[bm_count].stem, bm_stem, BIBLE_TRANS_LEN - 1);
+        bookmarks[bm_count].stem[BIBLE_TRANS_LEN - 1] = 0;
+        strncpy(bookmarks[bm_count].code, bm_code, RT_CODE_LEN - 1);
+        bookmarks[bm_count].code[RT_CODE_LEN - 1] = 0;
         strncpy(bookmarks[bm_count].label, label.c_str(), BIBLE_BM_LABEL_LEN - 1);
         bookmarks[bm_count].label[BIBLE_BM_LABEL_LEN - 1] = 0;
         bm_count++;
@@ -4582,7 +4665,7 @@ void BibleInterface::blInit() {
 void BibleInterface::blSet(uint8_t idx) {
     if (idx >= 20) idx = 19;
     bl_idx = idx;
-    { Preferences mp; if (mp.begin("menu", false)) { mp.putUChar("bright", bl_idx); mp.end(); } }
+    persistU8("menu", "bright", bl_idx);   // collision-safe (works from Main Menu too)
 #ifndef HAS_MINI_SCREEN
   #if ESP_ARDUINO_VERSION_MAJOR >= 3
     ledcWrite(TFT_BL, BL_LEVELS[bl_idx]);

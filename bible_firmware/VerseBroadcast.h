@@ -24,9 +24,10 @@ static const int CHUNK_BYTES = 29;
 static const int CHUNK_CAP   = 30;     // CHUNK_BYTES + NUL
 static const int MAX_CHUNKS  = 48;     // enough for a long verse
 
-// Split UTF-8 `text` into <=CHUNK_BYTES word-boundary chunks (NUL-terminated in
-// out[]). Returns the chunk count (clamped to max_chunks).
-int splitChunks(const char* text, char out[][CHUNK_CAP], int max_chunks);
+// Split UTF-8 `text` into <=max_len-byte word-boundary chunks (NUL-terminated in
+// out[]; max_len clamped to CHUNK_BYTES). Returns the chunk count (<= max_chunks).
+// Callers that add a numbering prefix pass a smaller max_len to leave room for it.
+int splitChunks(const char* text, char out[][CHUNK_CAP], int max_chunks, int max_len);
 
 // ── WiFi beacon spam (raw AP beacons) ───────────────────────────────────────
 void wifiBegin();                       // bring WiFi up in AP mode for raw TX

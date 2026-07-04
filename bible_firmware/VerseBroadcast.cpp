@@ -18,8 +18,9 @@ namespace VerseBroadcast {
 // ─────────────────────────────────────────────────────────────────────────────
 // Chunk splitter
 // ─────────────────────────────────────────────────────────────────────────────
-int splitChunks(const char* text, char out[][CHUNK_CAP], int max_chunks) {
+int splitChunks(const char* text, char out[][CHUNK_CAP], int max_chunks, int max_len) {
     if (!text) { if (max_chunks > 0) out[0][0] = 0; return 0; }
+    if (max_len <= 0 || max_len > CHUNK_BYTES) max_len = CHUNK_BYTES;
     int n = 0;
     const char* p = text;
     while (*p && n < max_chunks) {
@@ -27,7 +28,7 @@ int splitChunks(const char* text, char out[][CHUNK_CAP], int max_chunks) {
         if (!*p) break;
 
         int len = 0, last_space = -1;
-        while (p[len] && len < CHUNK_BYTES) {
+        while (p[len] && len < max_len) {
             if (p[len] == ' ') last_space = len;
             len++;
         }
@@ -36,7 +37,7 @@ int splitChunks(const char* text, char out[][CHUNK_CAP], int max_chunks) {
         // Never cut a UTF-8 multibyte sequence: back off any trailing continuation.
         while (len > 0 && (uint8_t)p[len] >= 0x80 && (uint8_t)p[len] < 0xC0) len--;
         if (len <= 0) len = 1;
-        if (len > CHUNK_BYTES) len = CHUNK_BYTES;
+        if (len > max_len) len = max_len;
 
         memcpy(out[n], p, len);
         out[n][len] = 0;

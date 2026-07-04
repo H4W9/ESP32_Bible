@@ -131,8 +131,13 @@ struct BibleBookmark {
     uint16_t chapter;                   // 1-based
     uint8_t verse_first;                // 0 = whole chapter; else 1-based verse start
     uint8_t verse_last;                 // 0 = whole chapter; else >= verse_first
-    uint8_t trans;                      // translation index (Songs/Dict: which file);
-                                        //   unused for Bible (book index is canon-global)
+    uint8_t trans;                      // translation index — legacy fallback only
+                                        //   (Songs/Dict now resolve via stem/code below)
+    // Stable identifiers so bookmarks survive songbook set/order changes (adding a
+    // regular edition alongside a Fraktur one shifts scan-order indices). Empty for
+    // Bible, whose book index is canon-global and stable.
+    char    stem[BIBLE_TRANS_LEN];      // songbook/dictionary file stem
+    char    code[RT_CODE_LEN];          // song/entry osisID code (e.g. "S730")
     char    label[BIBLE_BM_LABEL_LEN];  // e.g. "Gen 1" or "Gen 1:5" or "Gen 1:5-8"
 };
 
@@ -325,6 +330,7 @@ private:
     static const uint8_t BL_LEVELS[20];
     uint8_t   bl_idx;       // 0-19
     Preferences prefs;
+    char        prefs_ns[12];   // namespace the member `prefs` currently has open (RW)
 
     // ── Drawing helpers ───────────────────────────────────────────────────
     void drawHeader(const char* title, bool show_back = true);
@@ -391,6 +397,7 @@ private:
     bool headerFraktur() const;   // reading-view song-title header → Fraktur
     bool rowsFraktur() const;     // song-list (BV_BOOK_SELECT) rows → Fraktur
     bool transIsFraktur(uint8_t t) const;  // songbook t is a Fraktur book (stem "*_fraktur")
+    bool bookmarkFraktur(uint8_t idx) const;  // bookmark idx renders in the Fraktur font
 
     // ── Colors ────────────────────────────────────────────────────────────
     uint16_t fg()      const;
@@ -419,6 +426,8 @@ private:
     // ── Mode-parameterized SD paths / NVS namespace ───────────────────────
     const char* basePath() const;                       // /esp32_library/{bible,songs,dictionary}
     const char* nvsNamespace() const;                   // "bible" | "songs" | "dict"
+    void        openNvs(const char* ns);                 // (re)open member prefs on ns, track it
+    void        persistU8(const char* ns, const char* key, uint8_t val);  // collision-safe write
     void        bmPath(char* out, size_t n) const;      // <base>/bookmarks.txt
     void        srchHistPath(char* out, size_t n) const;// <base>/srch_hist.txt
 
