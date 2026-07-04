@@ -249,6 +249,7 @@ private:
     // ── Search ────────────────────────────────────────────────────────────
     char             search_query[BIBLE_SEARCH_QUERY_LEN];
     char             search_hist[BIBLE_SEARCH_HIST_MAX][BIBLE_SEARCH_QUERY_LEN];
+    bool             search_hist_frak[BIBLE_SEARCH_HIST_MAX];  // entry was a Fraktur search
     uint8_t          search_hist_count;
     int16_t          search_hist_sel;
     BibleSearchResult* search_results;   // heap/PSRAM (kept out of static .bss)
@@ -490,7 +491,7 @@ private:
     void jumpToSearchResult(uint16_t idx);
     bool searchContains(const char* text, const char* query);
     bool touchInSearchIcon(uint16_t x, uint16_t y);
-    void addToSearchHistory(const char* query);
+    void addToSearchHistory(const char* query, bool frak = false);
     void saveSearchHistory();
     void loadSearchHistory();
     bool parseOsisID(const char* osisID, uint16_t& book_out, uint16_t& chap_out, uint8_t& verse_out);

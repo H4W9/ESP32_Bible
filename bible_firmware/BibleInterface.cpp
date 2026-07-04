@@ -835,11 +835,10 @@ void BibleInterface::redrawListContent(uint16_t item_count) {
     // global clear (which would cause flash). vpDatum=false keeps screen-absolute coords.
     tft.setViewport(0, contentY(), scrW(), contentH(), false);
 
-    // Song list (BV_BOOK_SELECT) and search history (BV_SEARCH_INPUT) of a Fraktur
-    // songbook render in the Fraktur font; bookmarks pick per-row (see below).
+    // The song list (BV_BOOK_SELECT) of a Fraktur songbook renders its rows in the
+    // Fraktur font. Bookmarks and search history pick per-row (see below).
     // Category names and all other lists stay normal.
-    bool ft = rowsFraktur() ||
-              (view == BV_SEARCH_INPUT && mode == MODE_SONGS && g_read_fraktur);
+    bool ft = rowsFraktur();
     setUiFontEx(2, ft);
 
     int16_t last_bottom = content_top;
@@ -872,6 +871,8 @@ void BibleInterface::redrawListContent(uint16_t item_count) {
                             idx == (int16_t)bm_sel, false);
                 break;
             case BV_SEARCH_INPUT:
+                // Per-row: Fraktur searches render in the Fraktur font.
+                setUiFontEx(2, search_hist_frak[idx]);
                 drawListRow(y, search_hist[idx], idx == (int16_t)search_hist_sel, false);
                 break;
             default: break;
@@ -4424,15 +4425,15 @@ void BibleInterface::drawSearchInput() {
         tft.drawCentreString("Tap  New  to search", scrW() / 2, contentY() + 56, 1);
     } else {
         uint8_t vis = visItems();
-        // In a Fraktur songbook, past queries (which contain Fraktur ligatures like
-        // tz) render in the Fraktur font so they read the same as when typed.
-        bool ft = (mode == MODE_SONGS && g_read_fraktur);
-        setUiFontEx(2, ft);
         for (uint8_t i = 0; i < vis && (menu_scroll + i) < search_hist_count; i++) {
-            bool sel = ((menu_scroll + i) == (uint8_t)search_hist_sel);
-            drawListRow(contentY() + i * itemH(), search_hist[menu_scroll + i], sel, false);
+            uint8_t idx = menu_scroll + i;
+            bool sel = (idx == (uint8_t)search_hist_sel);
+            // Per-entry: a query typed in a Fraktur search renders in the Fraktur
+            // font (it may contain ligatures like tz); others stay normal.
+            setUiFontEx(2, search_hist_frak[idx]);
+            drawListRow(contentY() + i * itemH(), search_hist[idx], sel, false);
         }
-        if (ft) setUiFont(2);
+        setUiFont(2);   // restore normal UI font for scrollbar/nav
         drawScrollBar(search_hist_count, vis, menu_scroll);
     }
     drawNavBar("New", "View", "Del");
@@ -4495,12 +4496,19 @@ void BibleInterface::drawSearchResultRow(int16_t y_px, uint16_t idx, bool sel) {
             if (r.trans == cur_trans) {
                 snprintf(ref, sizeof(ref), "%s", bookDisplay(r.book));  // song title
             } else {
-                // "All" hit in another songbook — show the songbook name (uppercased).
-                char nm[BIBLE_TRANS_LEN];
-                strncpy(nm, (r.trans < trans_count) ? trans_stems[r.trans] : "?", sizeof(nm) - 1);
-                nm[sizeof(nm) - 1] = 0;
-                for (char* p = nm; *p; ++p) *p = (char)toupper((unsigned char)*p);
-                snprintf(ref, sizeof(ref), "%s", nm);
+                // "All" hit in another songbook — show the songbook's display name
+                // (with real umlauts from the .toc, not the ASCII-folded filename
+                // stem where ä→ae etc.), uppercased.
+                strncpy(ref, (r.trans < trans_count) ? trans_names[r.trans] : "?", sizeof(ref) - 1);
+                ref[sizeof(ref) - 1] = 0;
+                for (char* p = ref; *p; ++p) {
+                    uint8_t c = (uint8_t)*p;
+                    if      (c < 0x80)  *p = (char)toupper(c);   // ASCII → upper
+                    else if (c == 0x81) *p = (char)0x80;         // ä → Ä
+                    else if (c == 0x83) *p = (char)0x82;         // ö → Ö
+                    else if (c == 0x85) *p = (char)0x84;         // ü → Ü
+                    // 0x86 (ß) has no uppercase form; other codes unchanged
+                }
             }
         } else {
             snprintf(ref, sizeof(ref), "%s %d:%d",
@@ -4877,7 +4885,7 @@ void BibleInterface::handleSearchInputInput() {
                 // New — open a fresh keyboard, run search if confirmed
                 search_query[0] = 0;
                 if (openSearchKeyboard() && search_query[0]) {
-                    addToSearchHistory(search_query);
+                    addToSearchHistory(search_query, mode == MODE_SONGS && g_read_fraktur);
                     if (searchBible(search_query)) goToSearchResults();
                     else                           needs_redraw = true;
                 } else {
@@ -4893,7 +4901,7 @@ void BibleInterface::handleSearchInputInput() {
                             BIBLE_SEARCH_QUERY_LEN - 1);
                     search_query[BIBLE_SEARCH_QUERY_LEN - 1] = 0;
                     if (openSearchKeyboard() && search_query[0]) {
-                        addToSearchHistory(search_query);
+                        addToSearchHistory(search_query, mode == MODE_SONGS && g_read_fraktur);
                         if (searchBible(search_query)) goToSearchResults();
                         else                           needs_redraw = true;
                     } else {
@@ -5607,15 +5615,18 @@ bool BibleInterface::searchSongsAll(const char* query) {
 // ─────────────────────────────────────────────────────────────────────────────
 // Search — history persistence
 // ─────────────────────────────────────────────────────────────────────────────
-void BibleInterface::addToSearchHistory(const char* query) {
+void BibleInterface::addToSearchHistory(const char* query, bool frak) {
     if (!query || !query[0]) return;
     // Deduplicate: if already present, move to front
     for (uint8_t i = 0; i < search_hist_count; i++) {
         if (strcmp(search_hist[i], query) == 0) {
-            for (uint8_t j = i; j > 0; j--)
+            for (uint8_t j = i; j > 0; j--) {
                 memcpy(search_hist[j], search_hist[j - 1], BIBLE_SEARCH_QUERY_LEN);
+                search_hist_frak[j] = search_hist_frak[j - 1];
+            }
             strncpy(search_hist[0], query, BIBLE_SEARCH_QUERY_LEN - 1);
             search_hist[0][BIBLE_SEARCH_QUERY_LEN - 1] = 0;
+            search_hist_frak[0] = frak;
             saveSearchHistory();
             return;
         }
@@ -5624,10 +5635,13 @@ void BibleInterface::addToSearchHistory(const char* query) {
     uint8_t new_count = (search_hist_count < BIBLE_SEARCH_HIST_MAX)
                         ? search_hist_count + 1
                         : BIBLE_SEARCH_HIST_MAX;
-    for (uint8_t i = new_count - 1; i > 0; i--)
+    for (uint8_t i = new_count - 1; i > 0; i--) {
         memcpy(search_hist[i], search_hist[i - 1], BIBLE_SEARCH_QUERY_LEN);
+        search_hist_frak[i] = search_hist_frak[i - 1];
+    }
     strncpy(search_hist[0], query, BIBLE_SEARCH_QUERY_LEN - 1);
     search_hist[0][BIBLE_SEARCH_QUERY_LEN - 1] = 0;
+    search_hist_frak[0] = frak;
     search_hist_count = new_count;
     saveSearchHistory();
 }
@@ -5639,6 +5653,11 @@ void BibleInterface::saveSearchHistory() {
     File f = SD.open(path, FILE_WRITE);
     if (!f) return;
     for (uint8_t i = 0; i < search_hist_count; i++) {
+        // Format: "<0|1>\t<query>" — the leading flag marks a Fraktur search so the
+        // entry renders in the Fraktur font. (No keyboard key emits a tab, so the
+        // delimiter is unambiguous; old flagless files still load, defaulting to 0.)
+        f.write(search_hist_frak[i] ? '1' : '0');
+        f.write('\t');
         f.print(search_hist[i]);
         f.write('\n');
     }
@@ -5654,9 +5673,18 @@ void BibleInterface::loadSearchHistory() {
     while (f.available() && search_hist_count < BIBLE_SEARCH_HIST_MAX) {
         String line = f.readStringUntil('\n');
         line.trim();
-        if (line.length() == 0 || line.length() >= BIBLE_SEARCH_QUERY_LEN) continue;
-        strncpy(search_hist[search_hist_count], line.c_str(), BIBLE_SEARCH_QUERY_LEN - 1);
+        bool frak = false;
+        const char* q = line.c_str();
+        // Strip the "<0|1>\t" prefix if present; older files have none.
+        if (line.length() >= 2 && line[1] == '\t' && (line[0] == '0' || line[0] == '1')) {
+            frak = (line[0] == '1');
+            q += 2;
+        }
+        size_t qlen = strlen(q);
+        if (qlen == 0 || qlen >= BIBLE_SEARCH_QUERY_LEN) continue;
+        strncpy(search_hist[search_hist_count], q, BIBLE_SEARCH_QUERY_LEN - 1);
         search_hist[search_hist_count][BIBLE_SEARCH_QUERY_LEN - 1] = 0;
+        search_hist_frak[search_hist_count] = frak;
         search_hist_count++;
     }
     f.close();
