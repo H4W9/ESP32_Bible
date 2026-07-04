@@ -835,9 +835,11 @@ void BibleInterface::redrawListContent(uint16_t item_count) {
     // global clear (which would cause flash). vpDatum=false keeps screen-absolute coords.
     tft.setViewport(0, contentY(), scrW(), contentH(), false);
 
-    // Only the song list (BV_BOOK_SELECT) of a Fraktur songbook renders its rows in
-    // the Fraktur title font; category names and all other lists stay normal.
-    bool ft = rowsFraktur();
+    // Song list (BV_BOOK_SELECT) and search history (BV_SEARCH_INPUT) of a Fraktur
+    // songbook render in the Fraktur font; bookmarks pick per-row (see below).
+    // Category names and all other lists stay normal.
+    bool ft = rowsFraktur() ||
+              (view == BV_SEARCH_INPUT && mode == MODE_SONGS && g_read_fraktur);
     setUiFontEx(2, ft);
 
     int16_t last_bottom = content_top;
@@ -864,6 +866,8 @@ void BibleInterface::redrawListContent(uint16_t item_count) {
                 drawListRow(y, pageLabel(idx), idx == (int16_t)menu_sel, false);
                 break;
             case BV_BOOKMARKS:
+                // Per-row: a bookmark's label is a song title — Fraktur if its book is.
+                setUiFontEx(2, mode == MODE_SONGS && transIsFraktur(bookmarks[idx].trans));
                 drawListRow(y, bookmarks[idx].label,
                             idx == (int16_t)bm_sel, false);
                 break;
@@ -876,7 +880,7 @@ void BibleInterface::redrawListContent(uint16_t item_count) {
         if (bot > last_bottom) last_bottom = bot;
     }
 
-    if (ft) setUiFont(2);   // restore the normal UI font
+    setUiFont(2);   // restore the normal UI font (bookmarks/rows may have changed it)
 
     // Clear any unused space below the last row (list shorter than content zone).
     // Fill full width — the scrollbar will repaint its 6px column when needed.
@@ -1586,9 +1590,13 @@ void BibleInterface::drawBookmarks() {
     }
     uint8_t vis = visItems();
     for (uint8_t i = 0; i < vis && (bm_scroll + i) < bm_count; i++) {
-        bool sel = (bm_scroll + i) == (uint8_t)bm_sel;
-        drawListRow(contentY() + i * itemH(), bookmarks[bm_scroll + i].label, sel, false);
+        uint8_t idx = bm_scroll + i;
+        bool sel = idx == (uint8_t)bm_sel;
+        // A bookmark label is a song title — render Fraktur if its songbook is.
+        setUiFontEx(2, mode == MODE_SONGS && transIsFraktur(bookmarks[idx].trans));
+        drawListRow(contentY() + i * itemH(), bookmarks[idx].label, sel, false);
     }
+    setUiFont(2);   // restore normal UI font for scrollbar/nav
     drawScrollBar(bm_count, vis, bm_scroll);
     drawNavBar("Back", "View", "Del");
     if (bm_confirm_pending) drawConfirmDelete();
@@ -4416,10 +4424,15 @@ void BibleInterface::drawSearchInput() {
         tft.drawCentreString("Tap  New  to search", scrW() / 2, contentY() + 56, 1);
     } else {
         uint8_t vis = visItems();
+        // In a Fraktur songbook, past queries (which contain Fraktur ligatures like
+        // tz) render in the Fraktur font so they read the same as when typed.
+        bool ft = (mode == MODE_SONGS && g_read_fraktur);
+        setUiFontEx(2, ft);
         for (uint8_t i = 0; i < vis && (menu_scroll + i) < search_hist_count; i++) {
             bool sel = ((menu_scroll + i) == (uint8_t)search_hist_sel);
             drawListRow(contentY() + i * itemH(), search_hist[menu_scroll + i], sel, false);
         }
+        if (ft) setUiFont(2);
         drawScrollBar(search_hist_count, vis, menu_scroll);
     }
     drawNavBar("New", "View", "Del");

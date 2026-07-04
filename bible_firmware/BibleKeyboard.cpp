@@ -350,8 +350,9 @@ static void drawKeyboard(TFT_eSPI& tft, uint16_t fg, uint16_t bg,
     }
 
     // ── Row 4: control row ────────────────────────────────────────────────
-    // Function keys (X, SYM/ABC, SPC, OK) and the umlaut keys stay in the normal
-    // font even for a Fraktur songbook — only the letter/symbol keys are Fraktur.
+    // Function keys (X, SYM/ABC, SPC, OK) stay in the normal font even for a
+    // Fraktur songbook; the umlaut keys (ä ö ü ß) are letters, so they render in
+    // the active (Fraktur) font like the other letter keys.
     tft.loadFont(g_kb_font_main);
     int16_t rowY = kY + 4 * cH;
 
@@ -367,6 +368,8 @@ static void drawKeyboard(TFT_eSPI& tft, uint16_t fg, uint16_t bg,
     tft.setTextColor(key_fg, key_bg);
     tft.drawCentreString(layout == KB_ALPHA ? "SYM" : "ABC", cW + cW/2, ctrlY, 2);
 
+    // Cols 2-5: umlaut letter keys — draw in the active font (Fraktur when set).
+    tft.loadFont(g_kb_main_font);
     // Col 2: ä / Ä
     tft.drawRect(2*cW, rowY, cW, cH, bdr);
     drawUmlautLabel(tft, 2*cW, rowY, cW, cH, caps ? 'A' : 'a', key_fg, key_bg);
@@ -382,6 +385,7 @@ static void drawKeyboard(TFT_eSPI& tft, uint16_t fg, uint16_t bg,
     // Col 5: ß (no uppercase form)
     tft.drawRect(5*cW, rowY, cW, cH, bdr);
     drawSzligLabel(tft, 5*cW, rowY, cW, cH, key_fg, key_bg);
+    tft.loadFont(g_kb_font_main);   // back to normal for the remaining function keys
 
     // Cols 6-7: SPACE (double-wide) — font 2
     tft.fillRect(6*cW, rowY, 2*cW, cH, key_bg);
