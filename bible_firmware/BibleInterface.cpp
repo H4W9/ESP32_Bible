@@ -6,6 +6,7 @@
 
 #include "BibleInterface.h"
 #include "BibleKeyboard.h"
+#include "VerseBroadcast.h"
 #include "fonts_vlw.h"          // flash-resident smooth (VLW) fonts (reader + whole UI)
 #include "fonts_vlw_fraktur.h"        // Fraktur body set (song text, flagged songbooks)
 #include "fonts_vlw_fraktur_title.h"  // Fraktur title set (song/category/book titles)
@@ -302,6 +303,7 @@ BibleInterface::BibleInterface()
       cached_book(0xFFFF), cached_chap(0), cached_count(0),
       line_count(0), trans_count(0), bm_count(0), bm_sel(0), bm_scroll(0),
       bm_confirm_pending(false),
+      bcast_pending(false),
       search_hist_count(0), search_hist_sel(0),
       search_results(nullptr), search_result_count(0), search_res_sel(0),
       highlight_verse(0), reading_from_search(false),
@@ -1682,6 +1684,149 @@ void BibleInterface::drawConfirmDelete() {
     drawSmallCentered("Delete", del_x + half_w / 2, btn_y, btn_h, TFT_RED, hdr_bg());
 }
 
+#ifdef ENABLE_VERSE_BROADCAST
+// "Broadcast this verse" popup — WiFi / Bluetooth on the top row, Cancel below.
+// Geometry is mirrored by the hit-test in handleReadingInput().
+void BibleInterface::drawBroadcastMenu() {
+    int16_t pop_w = (int16_t)scrW() - 40;
+    int16_t pop_h = 108;
+    int16_t pop_x = 20;
+    int16_t pop_y = (int16_t)(scrH() / 2) - 54;
+
+    tft.fillRoundRect(pop_x,     pop_y,     pop_w,     pop_h,     6, bg());
+    tft.drawRoundRect(pop_x,     pop_y,     pop_w,     pop_h,     6, dim_fg());
+    tft.drawRoundRect(pop_x + 1, pop_y + 1, pop_w - 2, pop_h - 2, 6, dim_fg());
+
+    tft.setTextColor(fg(), bg());
+    tft.drawCentreString("Broadcast this verse", scrW() / 2, pop_y + 8, 2);
+
+    int16_t btn_h  = 28;
+    int16_t half_w = pop_w / 2 - 6;
+    int16_t r1_y   = pop_y + 34;
+    int16_t wifi_x = pop_x + 4;
+    int16_t bt_x   = pop_x + pop_w / 2 + 2;
+    int16_t r2_y   = pop_y + 70;
+    int16_t can_x  = pop_x + 4;
+    int16_t can_w  = pop_w - 8;
+
+    tft.fillRoundRect(wifi_x, r1_y, half_w, btn_h, 4, hdr_bg());
+    tft.drawRoundRect(wifi_x, r1_y, half_w, btn_h, 4, dim_fg());
+    drawSmallCentered("WiFi", wifi_x + half_w / 2, r1_y, btn_h, TFT_WHITE, hdr_bg());
+
+    tft.fillRoundRect(bt_x, r1_y, half_w, btn_h, 4, hdr_bg());
+    tft.drawRoundRect(bt_x, r1_y, half_w, btn_h, 4, dim_fg());
+    drawSmallCentered("Bluetooth", bt_x + half_w / 2, r1_y, btn_h, TFT_WHITE, hdr_bg());
+
+    tft.fillRoundRect(can_x, r2_y, can_w, btn_h, 4, hdr_bg());
+    tft.drawRoundRect(can_x, r2_y, can_w, btn_h, 4, dim_fg());
+    drawSmallCentered("Cancel", can_x + can_w / 2, r2_y, btn_h, TFT_WHITE, hdr_bg());
+}
+
+// Blocking broadcast screen: emits the selected verse as WiFi AP SSIDs (beacon
+// spam) or BLE device names until the user taps Stop. All radio code lives in
+// VerseBroadcast.* so the whole feature is easy to remove.
+void BibleInterface::runVerseBroadcast(bool use_wifi) {
+    if (sel_verse_first == 0 || cached_book != cur_book || cached_chap != cur_chapter)
+        return;
+
+    // Assemble the selected verse(s) as UTF-8 (private codes → real umlauts/etc.),
+    // prefixed with the reference, e.g. "Psalms 1:1" (or a range / song verse).
+    char text[BIBLE_VERSE_BUF * 3];
+    size_t tl = 0;
+    text[0] = 0;
+    {
+        char refp[64];
+        if (mode == MODE_SONGS) {
+            if (sel_verse_first == sel_verse_last)
+                snprintf(refp, sizeof(refp), "%s v%d", bookDisplay(cur_book), sel_verse_first);
+            else
+                snprintf(refp, sizeof(refp), "%s v%d-%d", bookDisplay(cur_book),
+                         sel_verse_first, sel_verse_last);
+        } else if (mode == MODE_DICT) {
+            refp[0] = 0;                       // dictionary entries have no chap:verse ref
+        } else if (sel_verse_first == sel_verse_last) {
+            snprintf(refp, sizeof(refp), "%s %d:%d", bookDisplay(cur_book),
+                     cur_chapter, sel_verse_first);
+        } else {
+            snprintf(refp, sizeof(refp), "%s %d:%d-%d", bookDisplay(cur_book),
+                     cur_chapter, sel_verse_first, sel_verse_last);
+        }
+        if (refp[0]) {
+            char ref_u8[128];
+            vlwPrivToUtf8(refp, ref_u8, sizeof(ref_u8));  // book-name umlauts → UTF-8
+            int w = snprintf(text, sizeof(text), "%s", ref_u8);
+            if (w > 0) tl = (size_t)w;                    // loop adds a space before the verse
+        }
+    }
+    for (uint8_t v = sel_verse_first; v <= sel_verse_last && v <= cached_count; v++) {
+        char u8[BIBLE_VERSE_BUF * 2];
+        vlwPrivToUtf8(verse_buf[v - 1], u8, sizeof(u8));
+        int w = snprintf(text + tl, sizeof(text) - tl, "%s%s", tl ? " " : "", u8);
+        if (w > 0) tl += (size_t)w;
+        if (tl >= sizeof(text) - 4) break;
+    }
+    if (!text[0]) return;
+
+    static char chunks[VerseBroadcast::MAX_CHUNKS][VerseBroadcast::CHUNK_CAP];
+    int nchunks = VerseBroadcast::splitChunks(text, chunks, VerseBroadcast::MAX_CHUNKS);
+    if (nchunks <= 0) return;
+
+    // Stop screen.
+    tft.fillScreen(bg());
+    drawHeader(use_wifi ? "Broadcasting: WiFi" : "Broadcasting: Bluetooth", false);
+    setUiFont(2);
+    tft.setTextColor(fg(), bg());
+    char sub[40];
+    snprintf(sub, sizeof(sub), "%d SSIDs" , nchunks);
+    if (!use_wifi) snprintf(sub, sizeof(sub), "%d BLE names", nchunks);
+    tft.drawCentreString(sub, scrW() / 2, contentY() + 24, 2);
+    // Stop button.
+    const int16_t bw = 100, bh = 34;
+    const int16_t bx = (int16_t)(scrW() / 2) - bw / 2;
+    const int16_t by = (int16_t)(contentY() + contentH() / 2);
+    tft.fillRoundRect(bx, by, bw, bh, 5, TFT_RED);
+    tft.drawRoundRect(bx, by, bw, bh, 5, dim_fg());
+    drawSmallCentered("Stop", scrW() / 2, by + 3, bh - 6, TFT_WHITE, TFT_RED);
+
+    if (use_wifi) VerseBroadcast::wifiBegin();
+    else          VerseBroadcast::bleBegin();
+
+    bool     was_down = false;
+    int      ci = 0;                 // current chunk (BLE cycles one name at a time)
+    uint32_t last_ble = 0;
+    for (;;) {
+        uint16_t px, py;
+        bool pdn = pollTouch(&px, &py);
+        if (pdn && !was_down) { was_down = true; touch_down_x = px; touch_down_y = py; }
+        else if (!pdn && was_down) {
+            was_down = false;
+            int16_t dx = (int16_t)touch_down_x, dy = (int16_t)touch_down_y;
+            if (dx >= bx && dx < bx + bw && dy >= by && dy < by + bh) break;   // Stop
+        }
+
+        if (use_wifi) {
+            // Beacon-spam every SSID each pass so they all appear in scans.
+            for (int i = 0; i < nchunks; i++) VerseBroadcast::wifiSendSSID(chunks[i]);
+        } else {
+            // BLE advertises one name at a time — dwell, then rotate.
+            uint32_t now = millis();
+            if (now - last_ble >= 600) {
+                VerseBroadcast::bleSetName(chunks[ci]);
+                ci = (ci + 1) % nchunks;
+                last_ble = now;
+            }
+        }
+        delay(use_wifi ? 15 : 10);
+        yield();
+    }
+
+    if (use_wifi) VerseBroadcast::wifiEnd();
+    else          VerseBroadcast::bleEnd();
+
+    needs_redraw = true;   // main loop repaints the reading view
+}
+#endif // ENABLE_VERSE_BROADCAST
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Touch input
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1993,6 +2138,39 @@ void BibleInterface::handleReadingInput() {
     uint16_t tx, ty;
     bool down = pollTouch(&tx, &ty);
 
+#ifdef ENABLE_VERSE_BROADCAST
+    // ── Broadcast-verse popup ─────────────────────────────────────────────────
+    // While visible, block reading input; act on a tap in WiFi / Bluetooth / Cancel.
+    if (bcast_pending) {
+        if (down && !touch_was_down) {
+            touch_was_down = true;
+            touch_down_x = tx; touch_down_y = ty;   // pollTouch has no coords on lift
+        } else if (!down && touch_was_down) {
+            touch_was_down = false;
+            // Geometry must match drawBroadcastMenu().
+            int16_t pop_w  = (int16_t)scrW() - 40;
+            int16_t pop_x  = 20;
+            int16_t pop_y  = (int16_t)(scrH() / 2) - 54;
+            int16_t btn_h  = 28;
+            int16_t half_w = pop_w / 2 - 6;
+            int16_t r1_y   = pop_y + 34;
+            int16_t wifi_x = pop_x + 4;
+            int16_t bt_x   = pop_x + pop_w / 2 + 2;
+            int16_t r2_y   = pop_y + 70;
+            int16_t dx = (int16_t)touch_down_x, dy = (int16_t)touch_down_y;
+            bool hit_row1 = (dy >= r1_y && dy < r1_y + btn_h);
+            bool hit_wifi = hit_row1 && (dx >= wifi_x && dx < wifi_x + half_w);
+            bool hit_bt   = hit_row1 && (dx >= bt_x   && dx < bt_x   + half_w);
+            // (Cancel, or a tap anywhere else, just closes the popup.)
+            bcast_pending = false;
+            if (hit_wifi)      { runVerseBroadcast(true);  }
+            else if (hit_bt)   { runVerseBroadcast(false); }
+            needs_redraw = true;
+        }
+        return;
+    }
+#endif
+
     // ── Finger just touched ────────────────────────────────────────────────
     if (down && !touch_was_down) {
         touch_was_down  = true;
@@ -2095,6 +2273,31 @@ void BibleInterface::handleReadingInput() {
                 return;
             }
         }
+
+#ifdef ENABLE_VERSE_BROADCAST
+        // Tap on the TEXT (x >= 55) of a currently-selected verse → broadcast popup.
+        if (sel_verse_first > 0
+                && (int16_t)touch_down_x >= 55
+                && (int16_t)touch_down_y >= (int16_t)contentY()
+                && (int16_t)touch_down_y < (int16_t)(contentY() + contentH())) {
+            int16_t sub_px   = (int16_t)fmodf(scroll_px, (float)lineH());
+            int16_t first_ln = (int16_t)(scroll_px / (float)lineH());
+            int16_t row_off  = ((int16_t)touch_down_y - (int16_t)contentY() + sub_px) / (int16_t)lineH();
+            int16_t line_idx = first_ln + row_off;
+            uint8_t v = 0;
+            for (int16_t k = line_idx; k >= 0; k--) {
+                if (k < (int16_t)line_count && lines[k][0] == '^') {
+                    const char* pipe = strchr(lines[k] + 1, '|');
+                    if (pipe) { v = (uint8_t)atoi(lines[k] + 1); break; }
+                }
+            }
+            if (v >= sel_verse_first && v <= sel_verse_last) {
+                bcast_pending = true;
+                drawBroadcastMenu();
+                return;
+            }
+        }
+#endif
 
         // Upper half = previous page/chapter, lower = next
         uint16_t mid = scrH() / 2;

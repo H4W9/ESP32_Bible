@@ -245,6 +245,7 @@ private:
     int16_t   bm_sel;
     int16_t   bm_scroll;
     bool      bm_confirm_pending;   // true while delete-confirmation popup is shown
+    bool      bcast_pending;        // true while the verse-broadcast popup is shown
 
     // ── Search ────────────────────────────────────────────────────────────
     char             search_query[BIBLE_SEARCH_QUERY_LEN];
@@ -363,6 +364,8 @@ private:
     void drawBookmarks();
     void drawAbout();           // firmware/hardware info screen
     void drawConfirmDelete();   // overlay popup drawn on top of bookmark list
+    void drawBroadcastMenu();   // "Broadcast verse" popup (WiFi / Bluetooth / Cancel)
+    void runVerseBroadcast(bool use_wifi);  // blocking broadcast screen until Stop
     void drawSearchInput();
     void drawSearchDelConfirm(); // overlay popup drawn on top of search history
     void drawSearchResults();
