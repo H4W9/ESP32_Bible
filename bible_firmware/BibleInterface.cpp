@@ -1357,7 +1357,7 @@ void BibleInterface::buildSettingsRows() {
     set_rows[k++] = SR_ORIENT;
     set_rows[k++] = SR_BRIGHT;
     set_rows[k++] = SR_ABOUT;
-    if (settings_from_menu) set_rows[k++] = SR_RESET;   // factory reset — Main Menu only
+    if (is_menu) set_rows[k++] = SR_RESET;              // factory reset — Main Menu scope only
     if (is_menu) set_rows[k++] = SR_BOOT;               // Boot Marauder — Main Menu scope only
 #ifndef HAS_CAP_TOUCH
     set_rows[k++] = SR_CALIB;
@@ -3439,8 +3439,19 @@ void BibleInterface::handleMainMenuInput() {
     }
     if (!down && touch_was_down) {
         touch_was_down = false;
-        // Easter egg: tap the header to show the boot splash again until tapped.
-        if ((int16_t)touch_down_y < (int16_t)hdrH()) { showSplashUntilTap(); return; }
+        // Easter egg: tap the "ESP-32" text in the header (only those glyphs, not
+        // the whole header band) to show the boot splash again until tapped.
+        // Mirror drawHeader()'s centred title layout for "ESP-32 Library".
+        if ((int16_t)touch_down_y < (int16_t)hdrH()) {
+            int16_t tw   = textWidthUTF8("ESP-32 Library", 2);
+            int16_t tx0  = (int16_t)(scrW() / 2) - tw / 2;
+            if (tx0 < 4) tx0 = 4;
+            int16_t espW = textWidthUTF8("ESP-32", 2);
+            if ((int16_t)touch_down_x >= tx0 && (int16_t)touch_down_x < tx0 + espW) {
+                showSplashUntilTap();
+                return;
+            }
+        }
         const int16_t margin = 16;
         const int16_t gap    = 14;
         const int16_t sh     = 34;
