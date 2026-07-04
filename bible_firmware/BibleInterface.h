@@ -371,6 +371,8 @@ private:
     void drawMemUsage(int16_t y);   // live DRAM/PSRAM usage on loading/search screens
 
     void drawListRow(int16_t y_px, const char* text, bool selected, bool has_arrow = true);
+    void drawListRowSprite(TFT_eSprite& spr, int16_t y_px, const char* text,
+                           bool selected, bool has_arrow);   // one row → sprite (smooth scroll)
     void redrawListContent(uint16_t item_count); // partial redraw during scroll (no header/nav)
     void redrawChapterContent(); // partial redraw during scroll (no header/nav)
     void redrawSearchResultsContent(); // partial redraw of search result list

@@ -631,6 +631,7 @@ void BibleInterface::clearContent() {
 static inline uint16_t vlwPrivToUnicode(uint8_t c);
 static int16_t vlwAdvance(const uint8_t* font, uint16_t uni);
 static int16_t vlwSpaceWidth(const uint8_t* font);
+static void    vlwPrivToUtf8(const char* in, char* out, size_t n);
 // The UI (menus / headers / nav / keyboard) smooth font, kept loaded on tft. All
 // TFT_eSPI text calls auto-route to it while it is loaded, so the whole UI renders
 // with the anti-aliased VLW font — and the umlaut glyphs come from the font itself.
@@ -669,6 +670,34 @@ void BibleInterface::drawListRow(int16_t y_px, const char* text, bool selected, 
         drawChevron(scrW() - 22, y_px, 16, itemH(), true, font_fg());  // follows Font Color
     // divider
     tft.drawFastHLine(0, y_px + itemH() - 1, scrW(),
+                      edgeColor(y_px / (int16_t)itemH(), dark_mode ? 0x2104 : 0xC618));
+}
+
+// Sprite version of drawListRow, drawing into `spr` at sprite-local coordinates
+// (mirrors drawListRow but uses printToSprite, for flicker-free momentum scrolling
+// like the reading/search views). The caller loads the row font into `spr`, pushes
+// the sprite, and draws the chevron on the TFT afterwards. `y_px` (screen Y) is used
+// only for the alternating divider colour.
+void BibleInterface::drawListRowSprite(TFT_eSprite& spr, int16_t y_px,
+                                       const char* text, bool selected, bool has_arrow) {
+    uint16_t bg_c  = selected ? sel_bg() : bg();
+    uint16_t fg_c  = font_fg();
+    int16_t  max_x = (int16_t)scrW() - (has_arrow ? 28 : 8);
+    int16_t  ty    = (int16_t)((itemH() - 16) / 2);
+    spr.fillSprite(bg_c);
+    spr.setTextColor(fg_c, bg_c);
+    int16_t tx = 10;
+    for (const char* p = text; *p && tx < max_x; p++) {
+        uint8_t c = (uint8_t)*p;
+        spr.setCursor(tx, ty);
+        char one[2] = { *p, 0 }, u8[8];
+        vlwPrivToUtf8(one, u8, sizeof(u8));
+        spr.printToSprite(u8, strlen(u8));
+        int16_t a = (c == ' ') ? vlwSpaceWidth(g_ui_vlw)
+                               : vlwAdvance(g_ui_vlw, vlwPrivToUnicode(c));
+        tx += (a < 0) ? (int16_t)(vlwSpaceWidth(g_ui_vlw) + 1) : a;
+    }
+    spr.drawFastHLine(0, (int16_t)itemH() - 1, scrW(),
                       edgeColor(y_px / (int16_t)itemH(), dark_mode ? 0x2104 : 0xC618));
 }
 
@@ -822,24 +851,26 @@ static const char* prettyName(const char* stem) {
 // header or nav bar.  Called directly during scroll drag/fling so there is no
 // full-screen repaint — eliminating the white/black flash between frames.
 // Uses scroll_px for sub-item-height pixel accuracy.
-// setViewport clips rows that extend into the header or nav bar zones.
-// startWrite / endWrite batches all SPI transfers in one transaction for speed.
+// setViewport clips rows that extend into the header or nav bar zones; each row is
+// pushed as one sprite blit so momentum scrolling is flicker-free.
 void BibleInterface::redrawListContent(uint16_t item_count) {
     int16_t sub_px      = (int16_t)fmodf(scroll_px, (float)itemH());
     int16_t first       = (int16_t)(scroll_px / (float)itemH());
     int16_t content_top = (int16_t)contentY();
     int16_t content_end = content_top + (int16_t)contentH();
 
-    tft.startWrite();
-    // Clip all draws to the content zone — prevents header/nav bleed without a
-    // global clear (which would cause flash). vpDatum=false keeps screen-absolute coords.
-    tft.setViewport(0, contentY(), scrW(), contentH(), false);
+    // Each row is rendered off-screen and blitted atomically for flicker-free
+    // scrolling (like the reading/search views). If the sprite can't be allocated
+    // (very low heap) we fall back to direct drawListRow (correct, but rippled).
+    TFT_eSprite row_spr(&tft);
+    bool use_spr = row_spr.createSprite(scrW(), (int16_t)itemH());
+    if (use_spr) row_spr.setTextWrap(false, false);
+    const uint8_t* spr_font = nullptr;   // track the sprite's loaded font to skip reloads
 
-    // The song list (BV_BOOK_SELECT) of a Fraktur songbook renders its rows in the
-    // Fraktur font. Bookmarks and search history pick per-row (see below).
-    // Category names and all other lists stay normal.
-    bool ft = rowsFraktur();
-    setUiFontEx(2, ft);
+    // Clip all draws to the content zone — prevents header/nav bleed. vpDatum=false
+    // keeps screen-absolute coords so the partial top/bottom rows clip cleanly.
+    tft.setViewport(0, contentY(), scrW(), contentH(), false);
+    if (!use_spr) setUiFontEx(2, rowsFraktur());   // base font for the fallback path
 
     int16_t last_bottom = content_top;
 
@@ -848,49 +879,55 @@ void BibleInterface::redrawListContent(uint16_t item_count) {
         int16_t y   = content_top - sub_px + i * (int16_t)itemH();
         if (y >= content_end || idx >= (int16_t)item_count) break;
 
+        // Which row: text, selection, arrow, and whether it renders in the Fraktur
+        // font (song list of a Fraktur book; per-row for bookmarks/search history).
+        const char* text = nullptr;
+        bool sel = false, has_arrow = true, row_frak = false;
         switch (view) {
             case BV_TRANS_SELECT:
-                drawListRow(y, trans_names[idx],
-                            idx == (int16_t)menu_sel);
-                break;
+                text = trans_names[idx]; sel = (idx == (int16_t)menu_sel); break;
             case BV_SECTION_SELECT:
-                if (idx < (int16_t)numSecs())
-                    drawListRow(y, secName(idx), idx == (int16_t)menu_sel);
+                if (idx < (int16_t)numSecs()) { text = secName(idx); sel = (idx == (int16_t)menu_sel); }
                 break;
             case BV_BOOK_SELECT:
-                drawListRow(y, bookDisplay(secStart(cur_sec) + idx),
-                            idx == (int16_t)menu_sel);
-                break;
-            case BV_CHAPTER_SELECT:   // Dictionary page list (smooth scroll)
-                drawListRow(y, pageLabel(idx), idx == (int16_t)menu_sel, false);
-                break;
+                text = bookDisplay(secStart(cur_sec) + idx); sel = (idx == (int16_t)menu_sel);
+                row_frak = rowsFraktur(); break;
+            case BV_CHAPTER_SELECT:   // Dictionary page list
+                text = pageLabel(idx); sel = (idx == (int16_t)menu_sel); has_arrow = false; break;
             case BV_BOOKMARKS:
-                // Per-row: a bookmark's label is a song title — Fraktur if its book is.
-                setUiFontEx(2, mode == MODE_SONGS && transIsFraktur(bookmarks[idx].trans));
-                drawListRow(y, bookmarks[idx].label,
-                            idx == (int16_t)bm_sel, false);
-                break;
+                text = bookmarks[idx].label; sel = (idx == (int16_t)bm_sel); has_arrow = false;
+                row_frak = (mode == MODE_SONGS && transIsFraktur(bookmarks[idx].trans)); break;
             case BV_SEARCH_INPUT:
-                // Per-row: Fraktur searches render in the Fraktur font.
-                setUiFontEx(2, search_hist_frak[idx]);
-                drawListRow(y, search_hist[idx], idx == (int16_t)search_hist_sel, false);
-                break;
+                text = search_hist[idx]; sel = (idx == (int16_t)search_hist_sel); has_arrow = false;
+                row_frak = search_hist_frak[idx]; break;
             default: break;
+        }
+
+        if (text) {
+            if (use_spr) {
+                const uint8_t* f = (row_frak ? FRAKT_FONTS : VLW_FONTS)[2].data;
+                if (f != spr_font) { row_spr.loadFont(f); spr_font = f; g_ui_vlw = f; }
+                drawListRowSprite(row_spr, y, text, sel, has_arrow);
+                row_spr.pushSprite(0, y);
+                if (has_arrow) drawChevron(scrW() - 22, y, 16, itemH(), true, font_fg());
+            } else {
+                setUiFontEx(2, row_frak);
+                drawListRow(y, text, sel, has_arrow);
+            }
         }
         int16_t bot = y + (int16_t)itemH();
         if (bot > last_bottom) last_bottom = bot;
     }
 
-    setUiFont(2);   // restore the normal UI font (bookmarks/rows may have changed it)
+    tft.resetViewport();
+    if (use_spr) { row_spr.deleteSprite(); ui_font_idx = -1; }
+    setUiFont(2);   // restore the normal UI font + g_ui_vlw
 
     // Clear any unused space below the last row (list shorter than content zone).
-    // Fill full width — the scrollbar will repaint its 6px column when needed.
     if (last_bottom < content_end)
         tft.fillRect(0, last_bottom, scrW(), content_end - last_bottom, bg());
 
-    tft.resetViewport();
     drawScrollBar(item_count, visItems(), first);
-    tft.endWrite();
 }
 
 // Redraws only the chapter tile grid and scrollbar without touching the header

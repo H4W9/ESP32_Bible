@@ -344,7 +344,12 @@ def generate(data_path, books_path, cats_path, out_dir, make_zip,
         # lines (with offsets). The firmware reads T| to show the proper songbook
         # name (with umlauts) in its menus; older firmware just ignores the line.
         toc_path = os.path.join(out_dir, stem + ".toc")
-        disp_name = toc_safe(clip(sanitize_text(book_title), DISPLAY_MAX))
+        # Fraktur songbooks get a " (Fraktur)" suffix in their display name so they're
+        # distinguishable from the regular edition in the firmware's menus/picker.
+        # Reserve room for the suffix so it survives the DISPLAY_MAX clip.
+        name_suffix = " (Fraktur)" if fraktur else ""
+        disp_name = toc_safe(clip(sanitize_text(book_title), DISPLAY_MAX - len(name_suffix))
+                             + name_suffix)
         with open(toc_path, "w", encoding="utf-8", newline="\n") as tf:
             tf.write(f"T|{disp_name}\n")
             if fraktur:
@@ -368,6 +373,7 @@ def generate(data_path, books_path, cats_path, out_dir, make_zip,
     print(f"\nDone.  {grand_verses:,} stanzas in {len(songs_by_book)} songbooks.")
     print(f"Output : ./{out_dir}/")
     print(f"Copy the .xml + .toc files into  /esp32_library/songs/  on the SD card.")
+    return written_files
 
 
 def main():
@@ -384,9 +390,28 @@ def main():
     ap.add_argument("--suffix", default=None,
                     help="append this to each output filename stem (default: "
                          "'_fraktur' when --fraktur, else none)")
+    ap.add_argument("--both", action="store_true",
+                    help="generate BOTH editions from the same source files into --out: "
+                         "the regular edition (Title1/Song columns) and the Fraktur "
+                         "edition (DFX columns, '_fraktur' stems + 'F|fraktur')")
     args = ap.parse_args()
-    generate(args.data, args.books, args.cats, args.out, args.zip,
-             fraktur=args.fraktur, suffix=args.suffix)
+
+    if args.both:
+        print("=== Regular edition (Title1 / Song) ===")
+        files  = generate(args.data, args.books, args.cats, args.out, False,
+                          fraktur=False, suffix="")
+        print("\n=== Fraktur edition (DFX columns) ===")
+        files += generate(args.data, args.books, args.cats, args.out, False,
+                          fraktur=True, suffix=None)
+        if args.zip:                       # one archive containing both editions
+            zip_path = args.out.rstrip("/\\") + "_sd.zip"
+            with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+                for fp in files:
+                    zf.write(fp, os.path.basename(fp))
+            print(f"\nZIP archive: {zip_path}")
+    else:
+        generate(args.data, args.books, args.cats, args.out, args.zip,
+                 fraktur=args.fraktur, suffix=args.suffix)
 
 
 if __name__ == "__main__":
