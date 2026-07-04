@@ -4467,22 +4467,25 @@ void BibleInterface::drawSearchDelConfirm() {
     drawSmallCentered("Delete", del_x + half_w / 2, btn_y, btn_h, TFT_RED, hdr_bg());
 }
 
-// Draws one search result row: reference on top line, snippet (with highlighted
-// query text) on second line.  y_px is the absolute screen Y of the row top.
-// Drawing is clipped by any active TFT viewport (set by redrawSearchResultsContent).
-void BibleInterface::drawSearchResultRow(int16_t y_px, uint16_t idx, bool sel) {
+// Renders one search result row INTO the caller-provided sprite `spr` (sized
+// row_w × srchH) at sprite-local coordinates: reference on the top line, snippet
+// (with highlighted query text) on the second. The caller then pushSprite()s it —
+// this off-screen-then-blit approach gives flicker-free scrolling like the reading
+// view (drawGlyph writes straight to hardware, so smooth text must use printToSprite).
+// `y_px` is the row's screen Y, used only for the alternating divider colour.
+void BibleInterface::drawSearchResultRow(TFT_eSprite& spr, int16_t y_px, uint16_t idx, bool sel) {
     const int16_t SBAR_W  = 6;
     const int16_t PADDING = 4;
     int16_t row_w = (int16_t)scrW() - SBAR_W;
     int16_t row_h = (int16_t)srchH();
 
     uint16_t bg_col = sel ? sel_bg() : bg();
-    tft.fillRect(0, y_px, row_w, row_h, bg_col);
+    spr.fillSprite(bg_col);
     // Divider line at bottom of row
-    tft.drawFastHLine(0, y_px + row_h - 1, row_w, edgeColor(y_px / (int16_t)srchH(), dim_fg()));
+    spr.drawFastHLine(0, row_h - 1, row_w, edgeColor(y_px / (int16_t)srchH(), dim_fg()));
 
-    // Reference line in font 2 (16px). Rendered char-by-char so song titles with
-    // umlauts (private codes) display correctly.
+    // Reference line (song title / dict headword / verse ref). Rendered via the
+    // sprite's smooth font so umlauts/ligatures (private codes) display correctly.
     {
         BibleSearchResult& r = search_results[idx];
         char ref[48];
@@ -4517,19 +4520,22 @@ void BibleInterface::drawSearchResultRow(int16_t y_px, uint16_t idx, bool sel) {
         // Fraktur song titles render in the blackletter title font; songbook-name
         // refs (cross-book "All" hits) stay in the normal font — names never Fraktur.
         bool refIsSongTitle = (mode == MODE_SONGS && r.trans == cur_trans);
-        setUiFontFam(1, (refIsSongTitle && transIsFraktur(r.trans)) ? 1 : 0);
-        tft.setTextColor(fg(), bg_col);
-        int16_t rx = PADDING;
-        for (const char* p = ref; *p && rx < row_w - 4; p++)
-            rx += tftCharUTF8(tft, (uint8_t)*p, rx, y_px + 3, 2, fg());
+        const uint8_t* titleFont =
+            ((refIsSongTitle && transIsFraktur(r.trans)) ? FRAKT_FONTS : VLW_FONTS)[1].data;
+        spr.loadFont(titleFont); g_ui_vlw = titleFont;
+        spr.setTextColor(fg(), bg_col);
+        spr.setCursor(PADDING, 3);
+        char ru8[sizeof(ref) * 3];                       // private codes → UTF-8 for printToSprite
+        vlwPrivToUtf8(ref, ru8, sizeof(ru8));
+        spr.printToSprite(ru8, strlen(ru8));             // clipped at the sprite edge
     }
 
-    // Snippet in font 1 (8px) with highlighted query segments.
+    // Snippet in the Tiny font with highlighted query segments.
     // disp/qdisp hold ASCII base letters (for case-insensitive match); snip holds
     // the original private codes so rendering shows proper umlauts/ß.
     // Private codes are 1-byte just like ASCII, so indices are identical between
     // snip and disp — we match on disp, render from snip.
-    int16_t snip_y = y_px + 20;
+    int16_t snip_y = 20;
     const char* snip = search_results[idx].snippet;
 
     static const char bases[] = {'A','a','O','o','U','u','B'};
@@ -4600,11 +4606,12 @@ void BibleInterface::drawSearchResultRow(int16_t y_px, uint16_t idx, bool sel) {
         }
     }
 
-    tft.setTextDatum(TL_DATUM);
+    spr.setTextDatum(TL_DATUM);
     // Snippet is song body text — render Fraktur books in the blackletter body font
     // (matches the reading view; makes ligatures like tz display correctly).
     bool snipFrak = (mode == MODE_SONGS && transIsFraktur(search_results[idx].trans));
-    setUiFontFam(0, snipFrak ? 2 : 0);     // Tiny for the snippet (one size smaller)
+    const uint8_t* snipFont = (snipFrak ? FRAK_FONTS : VLW_FONTS)[0].data;  // Tiny
+    spr.loadFont(snipFont); g_ui_vlw = snipFont;
     const int16_t tiny_lh = (int16_t)(snipFrak ? FRAK_FONTS[0].lineH : VLW_FONTS[0].lineH);
     const size_t  slen    = strlen(disp);  // disp and snip share indices (1 byte each)
 
@@ -4671,47 +4678,62 @@ void BibleInterface::drawSearchResultRow(int16_t y_px, uint16_t idx, bool sel) {
                 else { stop = true; break; }
             }
             uint16_t col = hl[k] ? (uint16_t)0xFD20 : norm_col;
-            tft.setTextColor(col, bg_col);
-            sx += tftCharUTF8(tft, (uint8_t)snip[k], sx, cur_y, 1, col);
+            spr.setTextColor(col, bg_col);
+            spr.setCursor(sx, cur_y);
+            char one[2] = { snip[k], 0 };
+            char cu8[8];
+            vlwPrivToUtf8(one, cu8, sizeof(cu8));
+            spr.printToSprite(cu8, strlen(cu8));
+            sx += charAdv((uint8_t)snip[k]);
         }
         if (stop) break;
         for (size_t k = we; k < i && sx > PADDING; k++)       // advance past spaces (no draw)
             sx += charAdv((uint8_t)snip[k]);
     }
-    setUiFont(1);   // restore X-Small for the next row's reference line
+    // Font/g_ui_vlw are left on the sprite's snippet font; the caller restores the
+    // UI font (setUiFont) after the row loop, before drawing chrome.
 }
 
 // Partial redraw of search result list (no header/nav repaint).
-// Uses scroll_px for sub-row pixel accuracy and a viewport to clip rows.
+// Each row is rendered into an off-screen sprite and blitted atomically, so
+// scrolling is flicker-free like the reading view (no per-row fill-then-draw ripple).
+// A viewport clips the partial top/bottom rows at the header/nav edges.
 void BibleInterface::redrawSearchResultsContent() {
     int16_t sub_px    = (int16_t)fmodf(scroll_px, (float)srchH());
     int16_t first     = (int16_t)(scroll_px / (float)srchH());
     int16_t cTop      = (int16_t)contentY();
     int16_t cEnd      = cTop + (int16_t)contentH();
+    int16_t row_w     = (int16_t)scrW() - 6;   // leave the 6px scrollbar column
 
-    tft.startWrite();
-    tft.setViewport(0, cTop, scrW(), contentH(), false);
-    setUiFont(1);   // X-Small for result rows (one switch for the whole loop)
+    TFT_eSprite row_spr(&tft);
+    if (!row_spr.createSprite(row_w, (int16_t)srchH())) {
+        // Low memory — clear the zone rather than render garbage.
+        tft.fillRect(0, cTop, scrW(), contentH(), bg());
+        drawScrollBar(search_result_count, visSearchItems(), first);
+        return;
+    }
+    row_spr.setTextWrap(false, false);
 
-    // Draw each visible row (each fills its own background — no upfront clear,
-    // which would cause a white/black flash between frames).
+    tft.setViewport(0, cTop, scrW(), contentH(), false);   // clips partial rows
     int16_t last_bottom = cTop;
     for (int i = 0; ; i++) {
         int16_t idx = first + i;
         int16_t y   = cTop - sub_px + i * (int16_t)srchH();
         if (y >= cEnd || idx >= (int16_t)search_result_count) break;
-        drawSearchResultRow(y, (uint16_t)idx, idx == search_res_sel);
+        drawSearchResultRow(row_spr, y, (uint16_t)idx, idx == search_res_sel);
+        row_spr.pushSprite(0, y);
         int16_t bot = y + (int16_t)srchH();
         if (bot > last_bottom) last_bottom = bot;
     }
-    setUiFont(2);
+    tft.resetViewport();
+    row_spr.deleteSprite();
+    ui_font_idx = -1;   // row renderer loaded fonts on the sprite + moved g_ui_vlw;
+    setUiFont(2);       // force a real reload so tft font + g_ui_vlw are restored
+
     // Clear any unused space below the last row (list shorter than content zone)
     if (last_bottom < cEnd)
-        tft.fillRect(0, last_bottom, (int16_t)scrW() - 6, cEnd - last_bottom, bg());
-
+        tft.fillRect(0, last_bottom, row_w, cEnd - last_bottom, bg());
     drawScrollBar(search_result_count, visSearchItems(), first);
-    tft.resetViewport();
-    tft.endWrite();
 }
 
 void BibleInterface::drawSearchResults() {
@@ -4731,11 +4753,18 @@ void BibleInterface::drawSearchResults() {
     }
 
     uint8_t vis = visSearchItems();
-    setUiFont(1);   // X-Small for result rows
-    for (uint8_t i = 0; i < vis && (menu_scroll + i) < search_result_count; i++) {
-        uint16_t idx = menu_scroll + i;
-        drawSearchResultRow((int16_t)(contentY() + i * srchH()), idx,
-                            idx == (uint16_t)search_res_sel);
+    int16_t row_w = (int16_t)scrW() - 6;   // leave the 6px scrollbar column
+    TFT_eSprite row_spr(&tft);
+    if (row_spr.createSprite(row_w, (int16_t)srchH())) {
+        row_spr.setTextWrap(false, false);
+        for (uint8_t i = 0; i < vis && (menu_scroll + i) < search_result_count; i++) {
+            uint16_t idx = menu_scroll + i;
+            int16_t  y   = (int16_t)(contentY() + i * srchH());
+            drawSearchResultRow(row_spr, y, idx, idx == (uint16_t)search_res_sel);
+            row_spr.pushSprite(0, y);
+        }
+        row_spr.deleteSprite();
+        ui_font_idx = -1;   // restore UI font/g_ui_vlw after the sprite renderer
     }
     setUiFont(2);
     drawScrollBar(search_result_count, vis, menu_scroll);

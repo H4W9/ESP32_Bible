@@ -366,7 +366,7 @@ private:
     void drawSearchInput();
     void drawSearchDelConfirm(); // overlay popup drawn on top of search history
     void drawSearchResults();
-    void drawSearchResultRow(int16_t y_px, uint16_t idx, bool sel); // one search result row
+    void drawSearchResultRow(TFT_eSprite& spr, int16_t y_px, uint16_t idx, bool sel); // one row → sprite
     void drawSearchProgress(uint32_t done, uint32_t total);
     void drawMemUsage(int16_t y);   // live DRAM/PSRAM usage on loading/search screens
 
