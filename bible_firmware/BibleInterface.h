@@ -273,7 +273,8 @@ private:
     bool             search_del_pending;    // true while delete-confirmation popup is shown
     bool             srch_partial_match;    // true = all query words must appear (any order/pos)
     bool             srch_ignore_punct;     // strip punctuation from text and query before matching
-    uint8_t          srch_scope;            // 0=Bible, 1=Section, 2=Book
+    uint8_t          srch_scope;            // Bible: 0=Bible,1=Section,2=Book. Songs: 0=Title,1=Body
+    bool             srch_songs_all;        // Songs: search across ALL songbooks (book picker "All")
     uint8_t          accent_idx;            // 0-19, index into ACCENT_DARK/LIGHT arrays
     uint8_t          sel_verse_first;       // 0 = no selection; else 1-based verse start
     uint8_t          sel_verse_last;        // >= sel_verse_first when selection active
@@ -511,7 +512,7 @@ private:
     // Handles the mode-specific option row (Bible scope / Songs Find / Dict picker).
     bool openSearchKeyboard();
     bool searchBible(const char* query);
-    bool searchSongsAll(const char* query);  // Songs "All" body scan; false if cancelled
+    bool searchSongsAll(const char* query, bool titles_only);  // Songs "All"; false if cancelled
     void jumpToSearchResult(uint16_t idx);
     bool searchContains(const char* text, const char* query);
     bool touchInSearchIcon(uint16_t x, uint16_t y);

@@ -308,7 +308,7 @@ BibleInterface::BibleInterface()
       search_results(nullptr), search_result_count(0), search_res_sel(0),
       highlight_verse(0), reading_from_search(false),
       search_del_pending(false),
-      srch_partial_match(true), srch_ignore_punct(true), srch_scope(0),
+      srch_partial_match(true), srch_ignore_punct(true), srch_scope(0), srch_songs_all(false),
       accent_idx(0),
       sel_verse_first(0), sel_verse_last(0),
       last_input_ms(0), last_pressed(false), bl_idx(19),
@@ -4357,6 +4357,7 @@ void BibleInterface::saveState() {
     prefs.putBool ("srch_part", srch_partial_match);
     prefs.putBool ("srch_pnct", srch_ignore_punct);
     prefs.putUChar("srch_scp",  srch_scope);
+    prefs.putBool ("srch_all",  srch_songs_all);
 }
 
 void BibleInterface::loadState() {
@@ -4378,6 +4379,7 @@ void BibleInterface::loadState() {
     srch_partial_match = prefs.getBool ("srch_part", true);
     srch_ignore_punct  = prefs.getBool ("srch_pnct", true);
     srch_scope         = prefs.getUChar("srch_scp",  0);
+    srch_songs_all     = prefs.getBool ("srch_all",  false);
     if (mode == MODE_BIBLE && cur_book >= BIBLE_BOOK_COUNT) cur_book = 0;
     if (cur_chapter == 0)               cur_chapter = 1;
     if (cur_trans  >= BIBLE_MAX_TRANS)  cur_trans  = 0;
@@ -5308,9 +5310,11 @@ void BibleInterface::handleSearchInputInput() {
                 search_hist_sel >= 0 &&
                 search_hist_sel < (int16_t)search_hist_count) {
                 for (uint8_t i = (uint8_t)search_hist_sel;
-                     i < search_hist_count - 1; i++)
+                     i < search_hist_count - 1; i++) {
                     memcpy(search_hist[i], search_hist[i + 1],
                            BIBLE_SEARCH_QUERY_LEN);
+                    search_hist_frak[i] = search_hist_frak[i + 1];   // keep flags aligned
+                }
                 search_hist_count--;
                 if (search_hist_sel >= (int16_t)search_hist_count &&
                     search_hist_sel > 0)
@@ -5369,6 +5373,20 @@ void BibleInterface::handleSearchInputInput() {
                     strncpy(search_query, search_hist[search_hist_sel],
                             BIBLE_SEARCH_QUERY_LEN - 1);
                     search_query[BIBLE_SEARCH_QUERY_LEN - 1] = 0;
+                    // Open the keyboard in the font this query was typed in: if the
+                    // item's Fraktur flag doesn't match the current songbook, switch
+                    // to a matching one (the keyboard font follows the selected book).
+                    if (mode == MODE_SONGS &&
+                        search_hist_frak[search_hist_sel] != transIsFraktur(cur_trans)) {
+                        for (uint8_t t = 0; t < trans_count; t++)
+                            if (transIsFraktur(t) == search_hist_frak[search_hist_sel]) {
+                                cur_trans = t;
+                                loadToc(trans_stems[cur_trans]);
+                                if (cur_book >= numBooks()) cur_book = 0;
+                                cur_sec = (numBooks() > 0) ? bookSection(cur_book) : 0;
+                                break;
+                            }
+                    }
                     if (openSearchKeyboard() && search_query[0]) {
                         addToSearchHistory(search_query, mode == MODE_SONGS && g_read_fraktur);
                         if (searchBible(search_query)) goToSearchResults();
@@ -5538,6 +5556,8 @@ void BibleInterface::jumpToSearchResult(uint16_t idx) {
 
     drawLoading();
     view = BV_READING;
+    // Dictionary: load this book's page labels so the header shows the word pair.
+    if (mode == MODE_DICT && rt_pages_book != cur_book) loadDictPages(cur_book);
     cacheChapter(cur_book, cur_chapter);
     buildWrappedLines();
 
@@ -5679,35 +5699,53 @@ bool BibleInterface::openSearchKeyboard() {
     }
     const char* pick_label = (mode == MODE_SONGS) ? "Book:"
                            : (mode == MODE_DICT)  ? "Dict:" : "Trans:";
-    uint8_t dsel = cur_trans;
 
-    bool ok;
+    bool    ok;
+    uint8_t new_trans = cur_trans;   // resolved from the picker after the keyboard closes
+
     if (mode == MODE_DICT) {
         // Dictionary auto-scopes to the query's letter bucket (no scope row).
+        uint8_t dsel = cur_trans;
         ok = bibleKeyboardInput(tft, fg(), bg(), search_query, BIBLE_SEARCH_QUERY_LEN,
                                 kb_title, &srch_partial_match, &srch_ignore_punct,
                                 nullptr, nullptr, nullptr, 0,
                                 names, trans_count, &dsel, pick_label);
+        new_trans = dsel;
     } else if (mode == MODE_SONGS) {
-        static const char* const FIND[3] = { "All", "Title", "Body" };
-        if (srch_scope > 2) srch_scope = 0;
-        // Fraktur songbook: render the keyboard in the blackletter font (matched
-        // size to g_kb_font_main = VLW_FONTS[2]) with the ligature symbol page.
-        const uint8_t* frak = g_read_fraktur ? FRAK_FONTS[2].data : nullptr;
+        // Find = Title / Body (0 / 1). "All songbooks" is the first book-picker entry.
+        static const char* const FIND[2] = { "Title", "Body" };
+        if (srch_scope > 1) srch_scope = 0;
+        const char* book_names[BIBLE_MAX_TRANS + 1];
+        bool        frak_opt[BIBLE_MAX_TRANS + 1];
+        // "All" searches the same-Fraktur-ness songbooks as the current one, so its
+        // keyboard follows the current book's font.
+        book_names[0] = "All"; frak_opt[0] = transIsFraktur(cur_trans);
+        for (uint8_t i = 0; i < trans_count; i++) {
+            book_names[i + 1] = names[i];
+            frak_opt[i + 1]   = transIsFraktur(i);
+        }
+        uint8_t bsel = srch_songs_all ? 0 : (uint8_t)(cur_trans + 1);
+        // Always pass the Fraktur font; frak_opt decides per book, and cycling the
+        // picker switches the keyboard between regular/Fraktur live.
         ok = bibleKeyboardInput(tft, fg(), bg(), search_query, BIBLE_SEARCH_QUERY_LEN,
                                 kb_title, &srch_partial_match, &srch_ignore_punct,
-                                &srch_scope, "Find:", FIND, 3,
-                                names, trans_count, &dsel, pick_label, frak);
+                                &srch_scope, "Find:", FIND, 2,
+                                book_names, (uint8_t)(trans_count + 1), &bsel, "Book:",
+                                FRAK_FONTS[2].data, frak_opt);
+        if (bsel == 0) srch_songs_all = true;
+        else         { srch_songs_all = false; new_trans = (uint8_t)(bsel - 1); }
     } else {  // Bible — default scope row (Bible / Section / Book) + translation picker
+        uint8_t dsel = cur_trans;
         ok = bibleKeyboardInput(tft, fg(), bg(), search_query, BIBLE_SEARCH_QUERY_LEN,
                                 kb_title, &srch_partial_match, &srch_ignore_punct,
                                 &srch_scope, nullptr, nullptr, 0,
                                 names, trans_count, &dsel, pick_label);
+        new_trans = dsel;
     }
 
-    // Apply a translation switch made in the picker (any mode).
-    if (dsel != cur_trans && dsel < trans_count) {
-        cur_trans = dsel;
+    // Apply a translation/songbook switch made in the picker.
+    if (new_trans != cur_trans && new_trans < trans_count) {
+        cur_trans = new_trans;
         prefs.putUChar("trans", cur_trans);
         cached_book = 0xFFFF; cached_chap = 0; cached_count = 0;
         book_idx_valid = false;
@@ -5724,6 +5762,7 @@ bool BibleInterface::openSearchKeyboard() {
     prefs.putBool ("srch_part", srch_partial_match);
     prefs.putBool ("srch_pnct", srch_ignore_punct);
     prefs.putUChar("srch_scp",  srch_scope);
+    prefs.putBool ("srch_all",  srch_songs_all);
     return ok;
 #else
     return false;
@@ -5736,12 +5775,13 @@ bool BibleInterface::searchBible(const char* query) {
     if (!search_results) return false;   // allocation failed at boot — no search
     if (trans_count == 0 || !query || !query[0]) return false;
 
-    // Songs "All": body scan across every songbook (handled in its own method).
-    if (mode == MODE_SONGS && srch_scope == 0)
-        return searchSongsAll(query);   // false = user cancelled
+    // Songs "All": search every (matching-Fraktur) songbook — titles or bodies per
+    // the Find option. Handled in its own method.
+    if (mode == MODE_SONGS && srch_songs_all)
+        return searchSongsAll(query, srch_scope == 0);   // titles-only when Find=Title
 
-    // Songs "Title" search: match song titles directly (instant, no XML scan).
-    if (mode == MODE_SONGS && srch_scope == 1) {
+    // Songs "Title" (Find=Title): match this songbook's titles directly (no XML scan).
+    if (mode == MODE_SONGS && srch_scope == 0) {
         for (uint16_t b = 0; b < numBooks() &&
                              search_result_count < BIBLE_MAX_SEARCH_RESULTS; b++) {
             if (searchContains(bookDisplay(b), query)) {
@@ -5754,6 +5794,7 @@ bool BibleInterface::searchBible(const char* query) {
         }
         return true;
     }
+    // Songs "Body" (Find=Body) falls through to the streaming XML scan below.
 
     // Show search progress screen
     tft.fillScreen(bg());
@@ -5962,7 +6003,7 @@ bool BibleInterface::searchBible(const char* query) {
 // Songs "All" — body-scan every songbook. Results carry their songbook index in
 // .trans so jumpToSearchResult() can switch files. Reloads each songbook's TOC so
 // parseOsisID resolves its codes, then restores the originally-open songbook.
-bool BibleInterface::searchSongsAll(const char* query) {
+bool BibleInterface::searchSongsAll(const char* query, bool titles_only) {
     if (!query || !query[0] || !search_results) return false;
     uint8_t saved_trans = cur_trans;
 
@@ -5989,6 +6030,22 @@ bool BibleInterface::searchSongsAll(const char* query) {
                         search_result_count < BIBLE_MAX_SEARCH_RESULTS; t++) {
         if (transIsFraktur(t) != want_frak) continue;   // don't cross the Fraktur/normal line
         if (!loadToc(trans_stems[t])) continue;   // need this file's codes
+
+        // Find=Title: match this songbook's titles directly (no XML body scan).
+        if (titles_only) {
+            for (uint16_t b = 0; b < numBooks() &&
+                                 search_result_count < BIBLE_MAX_SEARCH_RESULTS; b++) {
+                if (searchContains(bookDisplay(b), query)) {
+                    BibleSearchResult r;
+                    r.book = b; r.chapter = 1; r.verse = 1; r.trans = t;
+                    strncpy(r.snippet, bookDisplay(b), BIBLE_SRCH_SNIPPET_LEN - 1);
+                    r.snippet[BIBLE_SRCH_SNIPPET_LEN - 1] = 0;
+                    search_results[search_result_count++] = r;
+                }
+            }
+            continue;
+        }
+
         char path[64];
         snprintf(path, sizeof(path), "%s/%s.xml", basePath(), trans_stems[t]);
         File f = SD.open(path);

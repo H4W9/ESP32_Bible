@@ -523,13 +523,18 @@ bool bibleKeyboardInput(TFT_eSPI& tft,
                         uint8_t            dict_count,
                         uint8_t*           dict_sel,
                         const char*        dict_label,
-                        const uint8_t*     frak_font) {
+                        const uint8_t*     frak_font,
+                        const bool*        dict_frak) {
     if (!buffer || bufLen < 2) return false;
 
-    // Fraktur songbook: draw keys/typed text in the blackletter font and expose
-    // the ligature/typographic symbol page. Everything else uses the UI font.
-    g_frak_kb      = (frak_font != nullptr);
-    g_kb_main_font = frak_font ? frak_font : g_kb_font_main;
+    // Fraktur songbook: draw keys/typed text in the blackletter font and expose the
+    // ligature/typographic symbol page. When a per-option Fraktur table is supplied,
+    // the initial state follows the currently-selected picker option (and cycling the
+    // picker below switches it live). Otherwise it's simply on iff frak_font is set.
+    bool init_frak = (frak_font != nullptr) &&
+                     (dict_frak && dict_sel ? dict_frak[*dict_sel] : true);
+    g_frak_kb      = init_frak;
+    g_kb_main_font = init_frak ? frak_font : g_kb_font_main;
     tft.loadFont(g_kb_main_font);
 
     uint16_t scrW      = (uint16_t)tft.width();
@@ -591,6 +596,17 @@ bool bibleKeyboardInput(TFT_eSPI& tft,
                     }
                     if (has_trans && row == r) {
                         *dict_sel = (uint8_t)((*dict_sel + 1) % dict_count);
+                        // Songs: switch the keyboard font to match the picked songbook.
+                        if (frak_font && dict_frak) {
+                            bool nf = dict_frak[*dict_sel];
+                            if (nf != g_frak_kb) {
+                                g_frak_kb      = nf;
+                                g_kb_main_font = nf ? frak_font : g_kb_font_main;
+                                tft.loadFont(g_kb_main_font);
+                                drawKeyboard(tft, fg, bg, scrW, scrH, layout, caps);
+                                drawTextArea(tft, fg, bg, scrW, scrH, title, buffer, show_opts);
+                            }
+                        }
                     }
                 }
                 bool    pm = partial_match ? *partial_match : true;
