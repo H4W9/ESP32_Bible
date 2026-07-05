@@ -3882,24 +3882,27 @@ void BibleInterface::recordVel(int16_t y, uint32_t t) {
 
 float BibleInterface::computeFlingVel() const {
     uint8_t newest = vbuf_i;
-    // Widest-first, so we prefer a stable multi-sample span. Skip unwritten (zeroed)
-    // slots so their huge dt-from-0 doesn't get chosen. The 300 ms upper bound (was
-    // 120) covers slower/larger panels (e.g. Pancake ST7796) whose heavier per-frame
-    // redraw spaces the samples further apart.
+    // Widest-first over a short, recent window so we get a stable multi-sample span
+    // from genuine drag motion. Skip unwritten (zeroed) slots. The window stays tight
+    // [8,120] ms on purpose: on slower panels (Pancake ST7796) a flick often leaves
+    // only one or two samples, and the last can be a cap-touch release blip whose
+    // direction is wrong — those sparse/slow pairs fall through to the net-gesture
+    // fallback below (press → newest) which is always the intended scroll direction.
     for (int back = 3; back >= 1; back--) {
         uint8_t old = (vbuf_i - (uint8_t)back) & 3;
         if (vbuf_t[old] == 0) continue;
         uint32_t dt = vbuf_t[newest] - vbuf_t[old];
-        if (dt >= 5 && dt <= 300) {
+        if (dt >= 8 && dt <= 120) {
             float vel = (float)(vbuf_y[newest] - vbuf_y[old]) / (float)dt;
             return -vel * 1000.f;   // px/s; negated: finger-up → positive fling
         }
     }
-    // Fallback for a fast flick that produced too few samples to pair up (common on
-    // slower panels): use the gesture's press point as the oldest reference.
+    // Fallback for a flick that produced too few / too-widely-spaced samples to pair
+    // up in the window above (common on slower panels): measure the net gesture from
+    // the press point to the latest sample. Robust in direction, immune to end blips.
     if (vbuf_t[newest] != 0 && touch_down_ms != 0) {
         uint32_t dt = vbuf_t[newest] - touch_down_ms;
-        if (dt >= 5 && dt <= 400) {
+        if (dt >= 8 && dt <= 400) {
             float vel = (float)(vbuf_y[newest] - (int16_t)touch_down_y) / (float)dt;
             return -vel * 1000.f;
         }
