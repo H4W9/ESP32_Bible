@@ -24,6 +24,12 @@ sd_prep/__pycache__/
 sd_prep/songs/
 sd_prep/songs_fraktur/
 sd_prep/dictionary/
+sd_prep/bible_fraktur_out/
+
+# Source Bible translations (OSIS XML) fed to generate_fraktur_bible.py, and any
+# loose Bible XML — kept local, out of the repo (like the source spreadsheets).
+sd_prep/bible/
+sd_prep/*.xml
 
 # Source spreadsheets (song/dictionary data) — kept local, out of the repo.
 *.xlsx

@@ -1151,11 +1151,13 @@ bool BibleInterface::headerFraktur() const {
 bool BibleInterface::rowsFraktur() const {
     return g_read_fraktur && mode == MODE_SONGS && view == BV_BOOK_SELECT;
 }
-// A songbook is a Fraktur book iff its file stem ends in "_fraktur" (enforced by
-// generate_songs_xml.py). Lets search render/scope by Fraktur-ness without opening
-// each .toc (which would clobber g_read_fraktur as a side effect).
+// A translation is Fraktur iff its file stem ends in "_fraktur" (enforced by the
+// generators — generate_songs_xml.py for songbooks, generate_fraktur_bible.py for
+// German Bibles). Stem-based so search render/scope can decide Fraktur-ness without
+// opening each .toc (which would clobber g_read_fraktur as a side effect). Applies
+// to Songs *and* Bible so Fraktur German Bibles read in the blackletter font too.
 bool BibleInterface::transIsFraktur(uint8_t t) const {
-    if (mode != MODE_SONGS || t >= trans_count) return false;
+    if (t >= trans_count) return false;
     const char* s = trans_stems[t];
     size_t n = strlen(s);
     return n >= 8 && strcmp(s + n - 8, "_fraktur") == 0;
@@ -1163,7 +1165,9 @@ bool BibleInterface::transIsFraktur(uint8_t t) const {
 // A bookmark renders in the Fraktur font iff its songbook is Fraktur. Decided from
 // the stored stem (robust to index shifts); legacy bookmarks fall back to trans.
 bool BibleInterface::bookmarkFraktur(uint8_t idx) const {
-    if (mode != MODE_SONGS) return false;
+    // Fraktur label iff the bookmark's translation is Fraktur (songbook or Fraktur
+    // Bible), decided from the stored stem (robust to index shifts across modes);
+    // legacy bookmarks with no stem fall back to the trans index.
     const char* s = bookmarks[idx].stem;
     if (s[0]) {
         size_t n = strlen(s);
@@ -3637,7 +3641,9 @@ void BibleInterface::selectTranslation(uint16_t idx) {
     } else {
         // Bible: ensure the byte-offset buffer exists (filled lazily from the .idx
         // file inside cacheChapter). loadToc() handles this for Songs/Dict.
-        g_read_fraktur = false;   // Bible always uses the normal reading font
+        // Fraktur German Bibles (stem "_fraktur", from generate_fraktur_bible.py)
+        // read in the blackletter font just like Fraktur songbooks; all others normal.
+        g_read_fraktur = transIsFraktur(cur_trans);
         if (!book_offsets || book_offsets_cap < BIBLE_BOOK_COUNT) {
             if (book_offsets) free(book_offsets);
             book_offsets     = (uint32_t*)RT_MALLOC(sizeof(uint32_t) * BIBLE_BOOK_COUNT);
@@ -5175,9 +5181,10 @@ void BibleInterface::drawSearchResultRow(TFT_eSprite& spr, int16_t y_px, uint16_
         disp[di] = 0;
     }
     spr.setTextDatum(TL_DATUM);
-    // Snippet is song body text — render Fraktur books in the blackletter body font
-    // (matches the reading view; makes ligatures like tz display correctly).
-    bool snipFrak = (mode == MODE_SONGS && transIsFraktur(search_results[idx].trans));
+    // Snippet is verse/song body text — render Fraktur translations (songbooks and
+    // Fraktur Bibles) in the blackletter body font (matches the reading view; makes
+    // ligatures like tz and the round-s display correctly instead of raw markers).
+    bool snipFrak = transIsFraktur(search_results[idx].trans);
     const uint8_t* snipFont = (snipFrak ? FRAK_FONTS : VLW_FONTS)[0].data;  // Tiny
     spr.loadFont(snipFont); g_ui_vlw = snipFont;
     const int16_t tiny_lh = (int16_t)(snipFrak ? FRAK_FONTS[0].lineH : VLW_FONTS[0].lineH);
@@ -5465,7 +5472,7 @@ void BibleInterface::handleSearchInputInput() {
                 // New — open a fresh keyboard, run search if confirmed
                 search_query[0] = 0;
                 if (openSearchKeyboard() && search_query[0]) {
-                    addToSearchHistory(search_query, mode == MODE_SONGS && g_read_fraktur);
+                    addToSearchHistory(search_query, transIsFraktur(cur_trans));
                     if (searchBible(search_query)) goToSearchResults();
                     else                           needs_redraw = true;
                 } else {
@@ -5481,21 +5488,28 @@ void BibleInterface::handleSearchInputInput() {
                             BIBLE_SEARCH_QUERY_LEN - 1);
                     search_query[BIBLE_SEARCH_QUERY_LEN - 1] = 0;
                     // Open the keyboard in the font this query was typed in: if the
-                    // item's Fraktur flag doesn't match the current songbook, switch
-                    // to a matching one (the keyboard font follows the selected book).
-                    if (mode == MODE_SONGS &&
-                        search_hist_frak[search_hist_sel] != transIsFraktur(cur_trans)) {
+                    // item's Fraktur flag doesn't match the current translation, switch
+                    // to a matching one (the keyboard font follows the selected file).
+                    // Applies to Fraktur songbooks and Fraktur Bibles alike.
+                    if (search_hist_frak[search_hist_sel] != transIsFraktur(cur_trans)) {
                         for (uint8_t t = 0; t < trans_count; t++)
                             if (transIsFraktur(t) == search_hist_frak[search_hist_sel]) {
                                 cur_trans = t;
-                                loadToc(trans_stems[cur_trans]);
-                                if (cur_book >= numBooks()) cur_book = 0;
-                                cur_sec = (numBooks() > 0) ? bookSection(cur_book) : 0;
+                                cached_book = 0xFFFF; cached_chap = 0; cached_count = 0;
+                                book_idx_valid = false;
+                                if (mode != MODE_BIBLE) {
+                                    loadToc(trans_stems[cur_trans]);
+                                    if (cur_book >= numBooks()) cur_book = 0;
+                                    cur_sec = (numBooks() > 0) ? bookSection(cur_book) : 0;
+                                } else {
+                                    g_read_fraktur = transIsFraktur(cur_trans);
+                                    if (cur_book >= numBooks()) { cur_book = 0; cur_sec = bookSection(cur_book); }
+                                }
                                 break;
                             }
                     }
                     if (openSearchKeyboard() && search_query[0]) {
-                        addToSearchHistory(search_query, mode == MODE_SONGS && g_read_fraktur);
+                        addToSearchHistory(search_query, transIsFraktur(cur_trans));
                         if (searchBible(search_query)) goToSearchResults();
                         else                           needs_redraw = true;
                     } else {
@@ -5843,10 +5857,16 @@ bool BibleInterface::openSearchKeyboard() {
         else         { srch_songs_all = false; new_trans = (uint8_t)(bsel - 1); }
     } else {  // Bible — default scope row (Bible / Section / Book) + translation picker
         uint8_t dsel = cur_trans;
+        // Fraktur German Bibles (stem "_fraktur") get the blackletter keyboard so the
+        // typed query carries the same round-s / ch·ck·tz markers as the verse text it
+        // must match; cycling the translation picker switches the font live.
+        bool frak_opt[BIBLE_MAX_TRANS];
+        for (uint8_t i = 0; i < trans_count; i++) frak_opt[i] = transIsFraktur(i);
         ok = bibleKeyboardInput(tft, fg(), bg(), search_query, BIBLE_SEARCH_QUERY_LEN,
                                 kb_title, &srch_partial_match, &srch_ignore_punct,
                                 &srch_scope, nullptr, nullptr, 0,
-                                names, trans_count, &dsel, pick_label);
+                                names, trans_count, &dsel, pick_label,
+                                FRAK_FONTS[2].data, frak_opt);
         new_trans = dsel;
     }
 
@@ -5860,9 +5880,11 @@ bool BibleInterface::openSearchKeyboard() {
             loadToc(trans_stems[cur_trans]);
             if (cur_book >= numBooks()) cur_book = 0;
             cur_sec = (numBooks() > 0) ? bookSection(cur_book) : 0;
-        } else if (cur_book >= numBooks()) {
-            cur_book = 0;
-            cur_sec  = bookSection(cur_book);
+        } else {
+            // Bible has no .toc: set the reading font from the (maybe new) stem so a
+            // jump to a result renders Fraktur, then clamp the book.
+            g_read_fraktur = transIsFraktur(cur_trans);
+            if (cur_book >= numBooks()) { cur_book = 0; cur_sec = bookSection(cur_book); }
         }
     }
     // Persist option changes the user made inside the keyboard.
@@ -6060,7 +6082,10 @@ bool BibleInterface::searchBible(const char* query) {
                             r.book    = vs_book;
                             r.chapter = vs_chap;
                             r.verse   = vs_verse;
-                            r.trans   = (mode == MODE_BIBLE) ? 0 : cur_trans;
+                            // The searched translation — needed so a Fraktur Bible's
+                            // snippets render in the blackletter font (jumpToSearchResult
+                            // ignores r.trans for Bible, so this only drives rendering).
+                            r.trans   = cur_trans;
                             // Store snippet centered on first match occurrence
                             {
                                 size_t qlen2 = strlen(query);
