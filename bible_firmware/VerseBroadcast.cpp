@@ -88,7 +88,7 @@ void wifiBegin() {
     esp_wifi_set_max_tx_power(82);
 }
 
-void wifiSendSSID(const char* ssid) {
+int wifiSendSSID(const char* ssid) {
     uint8_t ch = (uint8_t)random(1, 12);
     esp_wifi_set_channel(ch, WIFI_SECOND_CHAN_NONE);
     delay(1);
@@ -114,6 +114,7 @@ void wifiSendSSID(const char* ssid) {
     esp_wifi_80211_tx(WIFI_IF_AP, beacon, frame_len, false);
     esp_wifi_80211_tx(WIFI_IF_AP, beacon, frame_len, false);
     esp_wifi_80211_tx(WIFI_IF_AP, beacon, frame_len, false);
+    return 3;                                            // three beacon frames sent
 }
 
 void wifiEnd() {
@@ -133,13 +134,14 @@ void bleBegin() {
     pAdv = server->getAdvertising();
 }
 
-void bleSetName(const char* name) {
-    if (!pAdv) return;
+int bleSetName(const char* name) {
+    if (!pAdv) return 0;
     pAdv->stop();
     NimBLEAdvertisementData data;
     data.setName(std::string(name));
     pAdv->setAdvertisementData(data);
     pAdv->start();
+    return 1;                                            // one advertisement started
 }
 
 void bleEnd() {

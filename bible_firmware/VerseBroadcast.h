@@ -31,12 +31,12 @@ int splitChunks(const char* text, char out[][CHUNK_CAP], int max_chunks, int max
 
 // ── WiFi beacon spam (raw AP beacons) ───────────────────────────────────────
 void wifiBegin();                       // bring WiFi up in AP mode for raw TX
-void wifiSendSSID(const char* ssid);    // broadcast one beacon (random MAC + channel)
+int  wifiSendSSID(const char* ssid);    // broadcast one SSID; returns beacon frames sent
 void wifiEnd();                         // tear WiFi back down
 
 // ── BLE name advertising (NimBLE) ───────────────────────────────────────────
 void bleBegin();
-void bleSetName(const char* name);      // (re)start advertising with this name
+int  bleSetName(const char* name);      // (re)start advertising; returns adverts started (1)
 void bleEnd();
 
 }  // namespace VerseBroadcast

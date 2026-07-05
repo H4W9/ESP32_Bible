@@ -962,12 +962,13 @@ void BibleInterface::redrawListContent(uint16_t item_count) {
 void BibleInterface::redrawChapterContent() {
     const int16_t  tile_h      = 36;
     uint16_t       chaps       = bookChapters(cur_book);
-    int16_t        tile_w      = scrW() / 5;
+    int16_t        spr_w       = (int16_t)scrW() - 6;   // leave the scrollbar column
+    int16_t        tile_w      = spr_w / 5;             // fit 5 tiles inside spr_w so the
+                                                        // rightmost box isn't clipped by it
     int16_t        total_rows  = ((int16_t)chaps + 4) / 5;
     uint8_t        vis_rows    = (uint8_t)(contentH() / tile_h);
     int16_t        content_top = (int16_t)contentY();
     int16_t        content_end = content_top + (int16_t)contentH();
-    int16_t        spr_w       = (int16_t)scrW() - 6;   // leave the scrollbar column
 
     int16_t sub_px    = (int16_t)fmodf(scroll_px, (float)tile_h);
     int16_t first_row = (int16_t)(scroll_px / (float)tile_h);
@@ -1484,7 +1485,10 @@ void BibleInterface::redrawSettingsContent() {
     int16_t content_end = content_top + (int16_t)contentH();
 
     tft.startWrite();
-    tft.setViewport(0, contentY(), scrW(), contentH(), false);
+    // Clip content to the left of the scrollbar so the full-width row fills/dividers
+    // never repaint the scrollbar column (that overwrite-then-redraw made it flicker
+    // during momentum scroll — same fix the sprite-based lists use).
+    tft.setViewport(0, contentY(), scrW() - 6, contentH(), false);
 
     // [<] Name [>] choice row. name_col = colour to draw the value text in
     // (0 = default fg). Font/Verse colour rows pass the actual colour so the user
@@ -1665,7 +1669,9 @@ void BibleInterface::drawTransValue(int16_t off) {
         for (const char* p = trans_marq_str; *p && tx2 < end; p++)
             tx2 += tftCharUTF8(tft, (uint8_t)*p, tx2, trans_marq_texty, 2, trans_marq_fg);
     }
-    tft.setViewport(0, contentY(), scrW(), contentH(), false);  // restore content clip
+    // Restore the settings content clip (short of the scrollbar column, matching
+    // redrawSettingsContent) so rows drawn after the Translation row stay clipped.
+    tft.setViewport(0, contentY(), scrW() - 6, contentH(), false);
 }
 
 // Advances the Translation marquee slowly and redraws just its window. Called
@@ -1914,6 +1920,19 @@ void BibleInterface::runVerseBroadcast(bool use_wifi) {
     const int16_t bar_y = (int16_t)(contentY() + contentH() / 2 + 8);
     tft.drawCentreString(sub, scrW() / 2, bar_y, 2);
 
+    // Live "Packets sent: N" counter one line above the SSID/BLE-name line.
+    const int16_t pkt_y = bar_y - (int16_t)VLW_FONTS[2].lineH - 2;
+    uint32_t packets_sent = 0;
+    auto drawPackets = [&]() {
+        setUiFont(2);
+        tft.fillRect(0, pkt_y, scrW(), (int16_t)VLW_FONTS[2].lineH + 2, bg());
+        char pbuf[32];
+        snprintf(pbuf, sizeof(pbuf), "Packets sent: %lu", (unsigned long)packets_sent);
+        tft.setTextColor(fg(), bg());
+        tft.drawCentreString(pbuf, scrW() / 2, pkt_y, 2);
+    };
+    drawPackets();
+
     // Stop button — same geometry/spot as the searching screen's Cancel button.
     const int16_t bw = 80, bh = 26;
     const int16_t bx = (int16_t)(scrW() / 2) - bw / 2;
@@ -1937,7 +1956,11 @@ void BibleInterface::runVerseBroadcast(bool use_wifi) {
             int16_t dx = (int16_t)touch_down_x, dy = (int16_t)touch_down_y;
             if (dx >= bx && dx < bx + bw && dy >= by && dy < by + bh) break;   // Stop
         }
-        if (millis() - last_mem >= 1000) { drawMemUsage(mem_y); last_mem = millis(); }
+        if (millis() - last_mem >= 1000) {
+            drawMemUsage(mem_y);
+            drawPackets();
+            last_mem = millis();
+        }
 
         char label[VerseBroadcast::CHUNK_CAP + 8];   // "[N] " + chunk
         if (use_wifi) {
@@ -1945,14 +1968,14 @@ void BibleInterface::runVerseBroadcast(bool use_wifi) {
             // "[N] " prefix lets you read them back in order from the scan list.
             for (int i = 0; i < nchunks; i++) {
                 snprintf(label, sizeof(label), "[%d] %s", i + 1, chunks[i]);
-                VerseBroadcast::wifiSendSSID(label);
+                packets_sent += (uint32_t)VerseBroadcast::wifiSendSSID(label);
             }
         } else {
             // BLE advertises one name at a time — dwell, then rotate.
             uint32_t now = millis();
             if (now - last_ble >= 600) {
                 snprintf(label, sizeof(label), "[%d] %s", ci + 1, chunks[ci]);
-                VerseBroadcast::bleSetName(label);
+                packets_sent += (uint32_t)VerseBroadcast::bleSetName(label);
                 ci = (ci + 1) % nchunks;
                 last_ble = now;
             }
@@ -2188,7 +2211,7 @@ void BibleInterface::handleListInput(uint16_t item_count) {
 
 void BibleInterface::handleChapterInput() {
     uint16_t  chaps      = bookChapters(cur_book);
-    uint16_t tile_w     = scrW() / 5;
+    uint16_t tile_w     = (scrW() - 6) / 5;   // matches redrawChapterContent()
     uint16_t tile_h     = 36;
     uint8_t  vis_rows   = (uint8_t)(contentH() / tile_h);
     int16_t  total_rows = ((int16_t)chaps + 4) / 5;
@@ -2222,6 +2245,7 @@ void BibleInterface::handleChapterInput() {
         // Map screen-y → absolute grid row through scroll_px (sub-pixel offset).
         if (ty >= (uint16_t)contentY() && ty < (uint16_t)(scrH() - navH())) {
             uint8_t col_p = (uint8_t)(tx / tile_w);
+            if (col_p > 4) col_p = 4;   // a tap in the right margin/scrollbar → last col
             int16_t row_p = (int16_t)(((float)((int16_t)ty - (int16_t)contentY()) + scroll_px)
                                       / (float)tile_h);
             uint16_t ch_p  = (uint16_t)(row_p * 5 + col_p + 1);
