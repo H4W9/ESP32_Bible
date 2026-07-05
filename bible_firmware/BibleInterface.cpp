@@ -312,7 +312,7 @@ BibleInterface::BibleInterface()
       accent_idx(0),
       sel_verse_first(0), sel_verse_last(0),
       last_input_ms(0), last_pressed(false), bl_idx(19),
-      touch_was_down(false), touch_down_x(0), touch_down_y(0),
+      touch_was_down(false), touch_down_x(0), touch_down_y(0), touch_down_ms(0),
       scroll_dragging(false),
       scroll_px(0.f), fling_vel(0.f), fling_ms(0), fling_active(false),
       drag_origin_px(0.f), vbuf_i(0),
@@ -2023,6 +2023,7 @@ bool BibleInterface::pollTouch(uint16_t* tx, uint16_t* ty) {
 #else
     if (!resistiveTouch(tx, ty)) { last_pressed = false; return false; }
 #endif
+    if (!last_pressed) touch_down_ms = millis();   // rising edge = gesture start time
     last_pressed  = true;
     last_input_ms = millis();
     return true;
@@ -3881,12 +3882,26 @@ void BibleInterface::recordVel(int16_t y, uint32_t t) {
 
 float BibleInterface::computeFlingVel() const {
     uint8_t newest = vbuf_i;
+    // Widest-first, so we prefer a stable multi-sample span. Skip unwritten (zeroed)
+    // slots so their huge dt-from-0 doesn't get chosen. The 300 ms upper bound (was
+    // 120) covers slower/larger panels (e.g. Pancake ST7796) whose heavier per-frame
+    // redraw spaces the samples further apart.
     for (int back = 3; back >= 1; back--) {
-        uint8_t old  = (vbuf_i - (uint8_t)back) & 3;
-        uint32_t dt  = vbuf_t[newest] - vbuf_t[old];
-        if (dt >= 8 && dt <= 120) {
+        uint8_t old = (vbuf_i - (uint8_t)back) & 3;
+        if (vbuf_t[old] == 0) continue;
+        uint32_t dt = vbuf_t[newest] - vbuf_t[old];
+        if (dt >= 5 && dt <= 300) {
             float vel = (float)(vbuf_y[newest] - vbuf_y[old]) / (float)dt;
             return -vel * 1000.f;   // px/s; negated: finger-up → positive fling
+        }
+    }
+    // Fallback for a fast flick that produced too few samples to pair up (common on
+    // slower panels): use the gesture's press point as the oldest reference.
+    if (vbuf_t[newest] != 0 && touch_down_ms != 0) {
+        uint32_t dt = vbuf_t[newest] - touch_down_ms;
+        if (dt >= 5 && dt <= 400) {
+            float vel = (float)(vbuf_y[newest] - (int16_t)touch_down_y) / (float)dt;
+            return -vel * 1000.f;
         }
     }
     return 0.f;
@@ -5222,8 +5237,11 @@ void BibleInterface::redrawSearchResultsContent() {
     int16_t row_w     = (int16_t)scrW() - 6;   // leave the 6px scrollbar column
 
     TFT_eSprite row_spr(&tft);
-    if (!row_spr.createSprite(row_w, (int16_t)srchH())) {
-        // Low memory — clear the zone rather than render garbage.
+    // Retry at 8-bit depth on low-DRAM boards (V6.1) where the 16-bit sprite fails.
+    bool spr_ok = row_spr.createSprite(row_w, (int16_t)srchH());
+    if (!spr_ok) { row_spr.setColorDepth(8); spr_ok = row_spr.createSprite(row_w, (int16_t)srchH()); }
+    if (!spr_ok) {
+        // Truly out of memory — clear the zone rather than render garbage.
         tft.fillRect(0, cTop, scrW(), contentH(), bg());
         drawScrollBar(search_result_count, visSearchItems(), first);
         return;
@@ -5271,7 +5289,11 @@ void BibleInterface::drawSearchResults() {
     uint8_t vis = visSearchItems();
     int16_t row_w = (int16_t)scrW() - 6;   // leave the 6px scrollbar column
     TFT_eSprite row_spr(&tft);
-    if (row_spr.createSprite(row_w, (int16_t)srchH())) {
+    // On low-DRAM boards without PSRAM (e.g. V6.1) the 16-bit row sprite (~23 KB)
+    // can fail to allocate; retry at 8-bit depth (~12 KB) so the rows still render.
+    bool ok = row_spr.createSprite(row_w, (int16_t)srchH());
+    if (!ok) { row_spr.setColorDepth(8); ok = row_spr.createSprite(row_w, (int16_t)srchH()); }
+    if (ok) {
         row_spr.setTextWrap(false, false);
         for (uint8_t i = 0; i < vis && (menu_scroll + i) < search_result_count; i++) {
             uint16_t idx = menu_scroll + i;

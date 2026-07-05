@@ -286,6 +286,7 @@ private:
     // ── Scroll gesture state ───────────────────────────────────────────────
     bool      touch_was_down;
     uint16_t  touch_down_x, touch_down_y;
+    uint32_t  touch_down_ms;    // millis() at the press edge (fling velocity fallback)
     bool      scroll_dragging;
 
     // ── Momentum scrolling ────────────────────────────────────────────────
