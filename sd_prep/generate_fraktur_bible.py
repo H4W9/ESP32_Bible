@@ -309,12 +309,16 @@ def frakturize_lower(w: str, d: dict, use_compound: bool, st: Stats) -> str:
 def convert_word(word: str, d: dict, use_compound: bool, st: Stats) -> str:
     st.total += 1
     lower = word.islower()
-    title = (not lower) and word[:1].isupper() and word[1:].islower()
-    if not (lower or title):
-        st.plain += 1                    # ALL-CAPS / mixed: Fraktur caps have no s-form
+    # Title-case OR ALL-CAPS both get folded to a single leading capital: Fraktur has
+    # no capital long/round-s distinction, so an all-caps word (e.g. the divine name
+    # HERR / HERRN, GOTT) can't be encoded in place — folding it to Title case keeps it
+    # readable in blackletter (HERR -> Herr, HERRN -> Herrn, GOTTES -> Gotte#).
+    titleish = (not lower) and word[:1].isupper() and (word[1:].islower() or word.isupper())
+    if not (lower or titleish):
+        st.plain += 1                    # genuinely mixed case (rare): leave as-is
         return word
     fk = frakturize_lower(word.lower(), d, use_compound, st)
-    if title:
+    if not lower:
         fk = fk[:1].upper() + fk[1:]     # capital S/ligature has no long/round variant
     return fk
 
