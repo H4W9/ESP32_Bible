@@ -386,6 +386,10 @@ private:
     void drawSearchDelConfirm(); // overlay popup drawn on top of search history
     void drawSearchResults();
     void drawSearchResultRow(TFT_eSprite& spr, int16_t y_px, uint16_t idx, bool sel); // one row → sprite
+    // Mark which chars of an ASCII-base string fall inside a search_query match
+    // (respects srch_partial_match / srch_ignore_punct). Shared by the search-result
+    // snippet and the reading view's query highlight. hl[] must hold >= slen bools.
+    void markQueryMatches(const char* disp, size_t slen, bool* hl);
     void drawSearchProgress(uint32_t done, uint32_t total);
     void drawMemUsage(int16_t y);   // live DRAM/PSRAM usage on loading/search screens
 

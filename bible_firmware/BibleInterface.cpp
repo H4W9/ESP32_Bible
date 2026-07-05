@@ -953,50 +953,74 @@ void BibleInterface::redrawListContent(uint16_t item_count) {
 }
 
 // Redraws only the chapter tile grid and scrollbar without touching the header
-// or nav bar.  Called directly during scroll drag instead of setting needs_redraw,
-// which would trigger a full drawChapterSelect() → fillScreen() → flash next loop.
-// startWrite / endWrite batches all SPI transfers in one transaction for speed.
+// or nav bar.  Called directly during scroll drag/fling instead of setting
+// needs_redraw (which would trigger a full drawChapterSelect() → fillScreen() flash).
+// Sub-pixel smooth scroll driven by scroll_px, matching the list views: each tile
+// row is rendered off-screen and blitted atomically for flicker-free scrolling, and
+// the sprite is 6px narrower than the screen so tiles never overwrite the scrollbar
+// column (that overwrite-then-redraw was making the scrollbar flicker).
 void BibleInterface::redrawChapterContent() {
-    uint16_t  chaps      = bookChapters(cur_book);
-    uint16_t tile_w     = scrW() / 5;
-    uint16_t tile_h     = 36;
-    uint8_t  vis_rows   = (uint8_t)(contentH() / tile_h);
-    int16_t  total_rows = ((int16_t)chaps + 4) / 5;
+    const int16_t  tile_h      = 36;
+    uint16_t       chaps       = bookChapters(cur_book);
+    int16_t        tile_w      = scrW() / 5;
+    int16_t        total_rows  = ((int16_t)chaps + 4) / 5;
+    uint8_t        vis_rows    = (uint8_t)(contentH() / tile_h);
+    int16_t        content_top = (int16_t)contentY();
+    int16_t        content_end = content_top + (int16_t)contentH();
+    int16_t        spr_w       = (int16_t)scrW() - 6;   // leave the scrollbar column
 
-    tft.startWrite();
-    // Each tile fills its own background; no global clear (prevents flash).
-    // Clip to content zone so tiles never bleed into header or nav.
-    tft.setViewport(0, contentY(), scrW(), contentH(), false);
+    int16_t sub_px    = (int16_t)fmodf(scroll_px, (float)tile_h);
+    int16_t first_row = (int16_t)(scroll_px / (float)tile_h);
 
-    for (uint8_t row = 0; row < vis_rows; row++) {
+    TFT_eSprite row_spr(&tft);
+    bool use_spr = row_spr.createSprite(spr_w, tile_h);
+    if (use_spr) row_spr.setTextWrap(false, false);
+
+    // Clip to the content zone (and short of the scrollbar) so partial top/bottom
+    // rows clip cleanly and nothing bleeds into the header, nav, or scrollbar.
+    tft.setViewport(0, content_top, spr_w, contentH(), false);
+
+    int16_t last_bottom = content_top;
+    for (int i = 0; ; i++) {
+        int16_t row = first_row + i;
+        int16_t y   = content_top - sub_px + i * tile_h;
+        if (y >= content_end || row >= total_rows) break;
+
+        if (use_spr) row_spr.fillSprite(bg());
         for (uint8_t col = 0; col < 5; col++) {
-            uint16_t ch = (uint16_t)((menu_scroll + row) * 5 + col + 1);
-            uint16_t x = col * tile_w;
-            uint16_t y = contentY() + row * tile_h;
-            if (ch > chaps) {
-                // Clear unused tile slots to the right in the last row
-                if (x < scrW() - 6)
-                    tft.fillRect(x, y, scrW() - 6 - x, tile_h, bg());
-                break;
-            }
+            uint16_t ch = (uint16_t)(row * 5 + col + 1);
+            if (ch > chaps) break;
+            int16_t  x       = col * tile_w;
             bool     sel     = (ch == cur_chapter) || (ch == (int16_t)menu_sel);
             uint16_t tile_bg = sel ? sel_bg() : bg();
-            tft.fillRect(x, y, tile_w, tile_h, tile_bg);
-            tft.drawRect(x, y, tile_w, tile_h, edgeColor(menu_scroll + row, dark_mode ? 0x2104 : 0xC618));
+            uint16_t edge    = edgeColor(row, dark_mode ? 0x2104 : 0xC618);
             char buf[5];
             snprintf(buf, sizeof(buf), "%d", ch);
-            tft.setTextColor(fg(), tile_bg);
-            tft.drawCentreString(buf, x + tile_w / 2, y + (tile_h - 16) / 2, 2);
+            if (use_spr) {
+                row_spr.fillRect(x, 0, tile_w, tile_h, tile_bg);
+                row_spr.drawRect(x, 0, tile_w, tile_h, edge);
+                row_spr.setTextColor(fg(), tile_bg);
+                row_spr.drawCentreString(buf, x + tile_w / 2, (tile_h - 16) / 2, 2);
+            } else {
+                tft.fillRect(x, y, tile_w, tile_h, tile_bg);
+                tft.drawRect(x, y, tile_w, tile_h, edge);
+                tft.setTextColor(fg(), tile_bg);
+                tft.drawCentreString(buf, x + tile_w / 2, y + (tile_h - 16) / 2, 2);
+            }
         }
+        if (use_spr) row_spr.pushSprite(0, y);
+        int16_t bot = y + tile_h;
+        if (bot > last_bottom) last_bottom = bot;
     }
-    // Clear any gap below the tile rows
-    uint16_t used_h = (uint16_t)vis_rows * tile_h;
-    if (used_h < contentH())
-        tft.fillRect(0, contentY() + used_h, scrW() - 6, contentH() - used_h, bg());
 
     tft.resetViewport();
-    drawScrollBar(total_rows, vis_rows, menu_scroll);
-    tft.endWrite();
+    if (use_spr) row_spr.deleteSprite();
+
+    // Clear any gap below the last tile row (grid shorter than the content zone).
+    if (last_bottom < content_end)
+        tft.fillRect(0, last_bottom, spr_w, content_end - last_bottom, bg());
+
+    drawScrollBar(total_rows, vis_rows, first_row);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1075,33 +1099,8 @@ void BibleInterface::drawChapterSelect() {
         return;
     }
 
-    uint16_t  chaps    = bookChapters(cur_book);
-    uint16_t tile_w   = scrW() / 5;
-    uint16_t tile_h   = 36;
-    uint8_t  vis_rows = (uint8_t)(contentH() / tile_h);
-
-    for (uint8_t row = 0; row < vis_rows; row++) {
-        for (uint8_t col = 0; col < 5; col++) {
-            uint16_t ch = (uint16_t)((menu_scroll + row) * 5 + col + 1);
-            if (ch > chaps) break;
-
-            uint16_t x  = col * tile_w;
-            uint16_t y  = contentY() + row * tile_h;
-            bool     sel = (ch == cur_chapter) || (ch == (int16_t)menu_sel);
-
-            uint16_t tile_bg = sel ? sel_bg() : bg();
-            tft.fillRect(x, y, tile_w, tile_h, tile_bg);
-            tft.drawRect(x, y, tile_w, tile_h, edgeColor(menu_scroll + row, dark_mode ? 0x2104 : 0xC618));
-
-            char buf[5];
-            snprintf(buf, sizeof(buf), "%d", ch);
-            tft.setTextColor(fg(), tile_bg);
-            tft.drawCentreString(buf, x + tile_w / 2, y + (tile_h - 16) / 2, 2);
-        }
-    }
-
-    int16_t total_rows = ((int16_t)chaps + 4) / 5;
-    drawScrollBar(total_rows, vis_rows, menu_scroll);
+    // Tiles + scrollbar go through the same sub-pixel path used during scrolling.
+    redrawChapterContent();
     drawNavBar("Marks", "Settings", "Bright");
 }
 
@@ -1225,6 +1224,37 @@ void BibleInterface::drawReadingLines() {
         }
     }
 
+    // Render a private-byte string into line_spr starting at (x0, y), painting the
+    // accent highlight behind characters that match the search query (search jumps).
+    auto drawHighlighted = [&](const char* priv, int16_t x0, int16_t y, uint16_t base_bg) {
+        static const char bases[] = {'A','a','O','o','U','u','B'};
+        char   disp[BIBLE_LINE_BUF];
+        size_t m = 0;
+        for (size_t j = 0; priv[j] && m < sizeof(disp) - 1; j++) {
+            uint8_t bc = (uint8_t)priv[j];
+            disp[m++] = (bc >= 0x80 && bc <= 0x86) ? bases[bc - 0x80] : priv[j];
+        }
+        disp[m] = 0;
+        bool hlmask[BIBLE_LINE_BUF];
+        markQueryMatches(disp, m, hlmask);
+        int16_t x = x0;
+        for (size_t j = 0; j < m; j++) {
+            uint8_t c   = (uint8_t)priv[j];
+            int16_t adv = (c == ' ') ? vlwSpaceWidth(vfont)
+                                     : vlwAdvance(vfont, vlwPrivToUnicode(c));
+            if (adv < 0) adv = (int16_t)vlwSpaceWidth(vfont) + 1;
+            uint16_t cbg = hlmask[j] ? hi_bg : base_bg;
+            if (hlmask[j]) line_spr.fillRect(x, 0, adv, (int16_t)lh, hi_bg);
+            char one[2] = { priv[j], 0 };
+            char cu8[8];
+            vlwPrivToUtf8(one, cu8, sizeof(cu8));
+            line_spr.setTextColor(font_fg(), cbg);
+            line_spr.setCursor(x, y);
+            line_spr.printToSprite(cu8, strlen(cu8));
+            x += adv;
+        }
+    };
+
     for (uint8_t i = 0; i < vis; i++) {
         int16_t row_y    = cy - sub_px + (int16_t)i * (int16_t)lh;
         if (row_y >= ce) break;
@@ -1240,13 +1270,14 @@ void BibleInterface::drawReadingLines() {
             }
         }
 
-        // Selection / search jump use the background highlight. Bookmarks are shown
-        // with an underline instead, so a bookmarked verse still reads as "selected"
-        // (highlight appears) when you tap it.
+        // A tapped selection highlights the whole verse background. A search jump
+        // instead highlights just the matched query text within the verse (see the
+        // drawHighlighted lambda). Bookmarks are shown with an underline instead, so
+        // a bookmarked verse still reads as "selected" (highlight) when you tap it.
+        bool search_hl = (reading_from_search && highlight_verse > 0
+                          && cur_verse_num == highlight_verse);
         uint16_t line_bg = bg();
-        if (highlight_verse > 0 && cur_verse_num == highlight_verse)
-            line_bg = hi_bg;
-        else if (sel_verse_first > 0
+        if (sel_verse_first > 0
                  && cur_verse_num >= sel_verse_first
                  && cur_verse_num <= sel_verse_last)
             line_bg = hi_bg;
@@ -1273,16 +1304,24 @@ void BibleInterface::drawReadingLines() {
                     line_spr.setCursor(4, txt_y);
                     line_spr.printToSprite(num_str, strlen(num_str));
                     int16_t nx = vlwTextWidth(vfont, num_str);   // advance for content x
-                    line_spr.setTextColor(font_fg(), line_bg);
-                    line_spr.setCursor(4 + nx + 2, txt_y);
-                    vlwPrivToUtf8(pipe + 1, u8, sizeof(u8));
-                    line_spr.printToSprite(u8, strlen(u8));
+                    if (search_hl) {
+                        drawHighlighted(pipe + 1, 4 + nx + 2, txt_y, line_bg);
+                    } else {
+                        line_spr.setTextColor(font_fg(), line_bg);
+                        line_spr.setCursor(4 + nx + 2, txt_y);
+                        vlwPrivToUtf8(pipe + 1, u8, sizeof(u8));
+                        line_spr.printToSprite(u8, strlen(u8));
+                    }
                 }
             } else {
-                line_spr.setTextColor(font_fg(), line_bg);
-                line_spr.setCursor(4, txt_y);
-                vlwPrivToUtf8(ln, u8, sizeof(u8));
-                line_spr.printToSprite(u8, strlen(u8));
+                if (search_hl) {
+                    drawHighlighted(ln, 4, txt_y, line_bg);
+                } else {
+                    line_spr.setTextColor(font_fg(), line_bg);
+                    line_spr.setCursor(4, txt_y);
+                    vlwPrivToUtf8(ln, u8, sizeof(u8));
+                    line_spr.printToSprite(u8, strlen(u8));
+                }
             }
             // Bookmark indicator: underline in the verse-number colour.
             if (is_bookmarked)
@@ -1856,26 +1895,32 @@ void BibleInterface::runVerseBroadcast(bool use_wifi) {
                                               VerseBroadcast::CHUNK_BYTES - 6);
     if (nchunks <= 0) return;
 
-    // Stop screen.
+    // Stop screen — mirrors the "Searching..." screen layout: memory readout tucked
+    // right under the header, the "N SSIDs / N BLE names" line where that screen's
+    // progress bar sits, and the Stop button where its Cancel button sits.
     tft.fillScreen(bg());
     drawHeader(use_wifi ? "Broadcasting: WiFi" : "Broadcasting: Bluetooth", false);
+
+    // Memory readout right under the header (matches drawSearchProgress()).
+    const int16_t mem_y = (int16_t)contentY() + 4;
+    drawMemUsage(mem_y);
+
+    // "N SSIDs / N BLE names" in the searching screen's progress-bar spot.
     setUiFont(2);
     tft.setTextColor(fg(), bg());
     char sub[40];
     snprintf(sub, sizeof(sub), "%d SSIDs" , nchunks);
     if (!use_wifi) snprintf(sub, sizeof(sub), "%d BLE names", nchunks);
-    tft.drawCentreString(sub, scrW() / 2, contentY() + 24, 2);
-    // Stop button.
-    const int16_t bw = 100, bh = 34;
-    const int16_t bx = (int16_t)(scrW() / 2) - bw / 2;
-    const int16_t by = (int16_t)(contentY() + contentH() / 2);
-    tft.fillRoundRect(bx, by, bw, bh, 5, TFT_RED);
-    tft.drawRoundRect(bx, by, bw, bh, 5, dim_fg());
-    drawSmallCentered("Stop", scrW() / 2, by + 3, bh - 6, TFT_WHITE, TFT_RED);
+    const int16_t bar_y = (int16_t)(contentY() + contentH() / 2 + 8);
+    tft.drawCentreString(sub, scrW() / 2, bar_y, 2);
 
-    // Live memory readout (D-RAM / PSRAM) below the Stop button.
-    int16_t mem_y = by + bh + 12;
-    drawMemUsage(mem_y);
+    // Stop button — same geometry/spot as the searching screen's Cancel button.
+    const int16_t bw = 80, bh = 26;
+    const int16_t bx = (int16_t)(scrW() / 2) - bw / 2;
+    const int16_t by = bar_y + 14 + 18 + 20;   // below bar + pct-text, + 20px gap
+    tft.fillRoundRect(bx, by, bw, bh, 4, TFT_RED);
+    tft.drawRoundRect(bx, by, bw, bh, 4, dim_fg());
+    drawSmallCentered("Stop", scrW() / 2, by, bh, TFT_WHITE, TFT_RED);
 
     if (use_wifi) VerseBroadcast::wifiBegin();
     else          VerseBroadcast::bleBegin();
@@ -2158,7 +2203,7 @@ void BibleInterface::handleChapterInput() {
         touch_down_y    = ty;
         scroll_dragging = false;
         stopFling();
-        drag_origin_px  = (float)menu_scroll * (float)tile_h;
+        drag_origin_px  = scroll_px;
 
         if (touchInHeader(tx, ty)) {
             touch_was_down = false;
@@ -2173,11 +2218,13 @@ void BibleInterface::handleChapterInput() {
             else                               { goToSettings(); }
             return;
         }
-        // Highlight the touched chapter tile immediately for press feedback
+        // Highlight the touched chapter tile immediately for press feedback.
+        // Map screen-y → absolute grid row through scroll_px (sub-pixel offset).
         if (ty >= (uint16_t)contentY() && ty < (uint16_t)(scrH() - navH())) {
             uint8_t col_p = (uint8_t)(tx / tile_w);
-            uint8_t row_p = (uint8_t)((ty - contentY()) / tile_h);
-            uint16_t ch_p  = (uint16_t)((menu_scroll + row_p) * 5 + col_p + 1);
+            int16_t row_p = (int16_t)(((float)((int16_t)ty - (int16_t)contentY()) + scroll_px)
+                                      / (float)tile_h);
+            uint16_t ch_p  = (uint16_t)(row_p * 5 + col_p + 1);
             if (ch_p >= 1 && ch_p <= chaps) {
                 menu_sel = (int16_t)ch_p;
                 redrawChapterContent();
@@ -2193,18 +2240,15 @@ void BibleInterface::handleChapterInput() {
             menu_sel = -1;  // clear tile highlight when drag begins
         }
         if (scroll_dragging) {
-            // Chapter grid stays quantized during drag
+            // Sub-pixel smooth drag (matches the list views) — redraw every frame.
             float raw_px   = drag_origin_px + (float)((int16_t)touch_down_y - (int16_t)ty);
             float max_px   = (float)max_scroll * (float)tile_h;
             if (raw_px < 0.f) raw_px = 0.f;
             if (raw_px > max_px) raw_px = max_px;
-            scroll_px = raw_px;
-            int16_t new_scroll = (int16_t)(scroll_px / (float)tile_h);
+            scroll_px   = raw_px;
+            menu_scroll = (int16_t)(scroll_px / (float)tile_h);
             recordVel((int16_t)ty, millis());
-            if (new_scroll != menu_scroll) {
-                menu_scroll = new_scroll;
-                redrawChapterContent();
-            }
+            redrawChapterContent();
         }
         return;
     }
@@ -4920,6 +4964,84 @@ void BibleInterface::drawSearchDelConfirm() {
     drawSmallCentered("Delete", del_x + half_w / 2, btn_y, btn_h, TFT_RED, hdr_bg());
 }
 
+// Marks which characters of `disp` (ASCII-base text, 1 byte per char) fall inside a
+// match of the current search_query. Tokenisation mirrors searchBible():
+//   phrase mode  → one token = the whole (optionally punct-stripped) query,
+//   partial mode → one token per space-delimited word,
+// and matching honours srch_ignore_punct. Shared by the search-result snippet and
+// the reading view's inline query highlight so both stay perfectly in sync.
+void BibleInterface::markQueryMatches(const char* disp, size_t slen, bool* hl) {
+    for (size_t i = 0; i < slen; i++) hl[i] = false;
+
+    static const char bases[] = {'A','a','O','o','U','u','B'};
+    // search_query private codes → ASCII bases, punctuation stripped if requested.
+    char qbase[BIBLE_SEARCH_QUERY_LEN];
+    {
+        size_t qi = 0;
+        for (const char* qs = search_query; *qs && qi < BIBLE_SEARCH_QUERY_LEN - 1; qs++) {
+            uint8_t bc = (uint8_t)*qs;
+            char    c  = (bc >= 0x80 && bc <= 0x86) ? bases[bc - 0x80] : *qs;
+            if (srch_ignore_punct && (uint8_t)c < 0x80 && ispunct((int)(uint8_t)c)) continue;
+            qbase[qi++] = c;
+        }
+        qbase[qi] = 0;
+    }
+
+    struct Token { char s[BIBLE_SEARCH_QUERY_LEN]; size_t len; };
+    Token tokens[16];
+    int   ntokens = 0;
+    if (srch_partial_match) {
+        const char* p = qbase;
+        while (*p && ntokens < 16) {
+            while (*p == ' ') p++;
+            if (!*p) break;
+            const char* ws = p;
+            while (*p && *p != ' ') p++;
+            size_t wl = (size_t)(p - ws);
+            if (wl > 0 && wl < BIBLE_SEARCH_QUERY_LEN) {
+                memcpy(tokens[ntokens].s, ws, wl);
+                tokens[ntokens].s[wl] = 0;
+                tokens[ntokens].len   = wl;
+                ntokens++;
+            }
+        }
+    } else {
+        size_t bl = strlen(qbase);
+        if (bl > 0) {
+            memcpy(tokens[0].s, qbase, bl + 1);
+            tokens[0].len = bl;
+            ntokens = 1;
+        }
+    }
+
+    for (size_t si = 0; si < slen; ) {
+        bool   found     = false;
+        size_t match_end = 0;
+        for (int t = 0; t < ntokens && !found; t++) {
+            const char* tok = tokens[t].s;
+            size_t      tl  = tokens[t].len;
+            if (tl == 0) continue;
+            if (srch_ignore_punct) {
+                size_t qi = 0, di = si;
+                while (qi < tl) {
+                    while (disp[di] && (uint8_t)disp[di] < 0x80 && ispunct((int)(uint8_t)disp[di])) di++;
+                    if (!disp[di]) break;
+                    if (tolower((uint8_t)disp[di]) != tolower((uint8_t)tok[qi])) break;
+                    di++; qi++;
+                }
+                if (qi == tl) { found = true; match_end = di; }
+            } else {
+                bool m = true;
+                for (size_t j = 0; j < tl && m; j++)
+                    if (!disp[si + j] || tolower((uint8_t)disp[si + j]) != tolower((uint8_t)tok[j])) m = false;
+                if (m) { found = true; match_end = si + tl; }
+            }
+        }
+        if (found) { for (size_t j = si; j < match_end && j < slen; j++) hl[j] = true; si = match_end; }
+        else si++;
+    }
+}
+
 // Renders one search result row INTO the caller-provided sprite `spr` (sized
 // row_w × srchH) at sprite-local coordinates: reference on the top line, snippet
 // (with highlighted query text) on the second. The caller then pushSprite()s it —
@@ -4984,8 +5106,8 @@ void BibleInterface::drawSearchResultRow(TFT_eSprite& spr, int16_t y_px, uint16_
     }
 
     // Snippet in the Tiny font with highlighted query segments.
-    // disp/qdisp hold ASCII base letters (for case-insensitive match); snip holds
-    // the original private codes so rendering shows proper umlauts/ß.
+    // disp holds ASCII base letters (for case-insensitive match via markQueryMatches);
+    // snip holds the original private codes so rendering shows proper umlauts/ß.
     // Private codes are 1-byte just like ASCII, so indices are identical between
     // snip and disp — we match on disp, render from snip.
     int16_t snip_y = 20;
@@ -5002,63 +5124,6 @@ void BibleInterface::drawSearchResultRow(TFT_eSprite& spr, int16_t y_px, uint16_
         }
         disp[di] = 0;
     }
-    char qdisp[BIBLE_SEARCH_QUERY_LEN];
-    {
-        const char* qs = search_query;
-        size_t qi = 0;
-        for (; *qs && qi < BIBLE_SEARCH_QUERY_LEN - 1; qs++) {
-            uint8_t bc = (uint8_t)*qs;
-            qdisp[qi++] = (bc >= 0x80 && bc <= 0x86) ? bases[bc - 0x80] : *qs;
-        }
-        qdisp[qi] = 0;
-    }
-    size_t qlen = strlen(qdisp);
-
-    // Build the set of tokens to highlight.
-    // Phrase mode: one token = the full (possibly punct-stripped) query.
-    // Partial mode: one token per space-delimited word.
-    // Each token is punct-stripped when srch_ignore_punct is on.
-    struct Token { char s[BIBLE_SEARCH_QUERY_LEN]; size_t len; };
-    Token  tokens[16];
-    int    ntokens = 0;
-
-    // Source string for splitting: qdisp (private-codes mapped to ASCII bases)
-    // with punctuation stripped if needed.
-    char qbase[BIBLE_SEARCH_QUERY_LEN];  // punct-stripped qdisp
-    {
-        size_t qi = 0;
-        for (size_t i = 0; qdisp[i] && qi < BIBLE_SEARCH_QUERY_LEN - 1; i++) {
-            uint8_t c = (uint8_t)qdisp[i];
-            if (srch_ignore_punct && c < 0x80 && ispunct((int)c)) continue;
-            qbase[qi++] = qdisp[i];
-        }
-        qbase[qi] = 0;
-    }
-
-    if (srch_partial_match) {
-        const char* p = qbase;
-        while (*p && ntokens < 16) {
-            while (*p == ' ') p++;
-            if (!*p) break;
-            const char* ws = p;
-            while (*p && *p != ' ') p++;
-            size_t wl = (size_t)(p - ws);
-            if (wl > 0 && wl < BIBLE_SEARCH_QUERY_LEN) {
-                memcpy(tokens[ntokens].s, ws, wl);
-                tokens[ntokens].s[wl] = 0;
-                tokens[ntokens].len   = wl;
-                ntokens++;
-            }
-        }
-    } else {
-        size_t bl = strlen(qbase);
-        if (bl > 0) {
-            memcpy(tokens[0].s, qbase, bl + 1);
-            tokens[0].len = bl;
-            ntokens = 1;
-        }
-    }
-
     spr.setTextDatum(TL_DATUM);
     // Snippet is song body text — render Fraktur books in the blackletter body font
     // (matches the reading view; makes ligatures like tz display correctly).
@@ -5068,35 +5133,9 @@ void BibleInterface::drawSearchResultRow(TFT_eSprite& spr, int16_t y_px, uint16_
     const int16_t tiny_lh = (int16_t)(snipFrak ? FRAK_FONTS[0].lineH : VLW_FONTS[0].lineH);
     const size_t  slen    = strlen(disp);  // disp and snip share indices (1 byte each)
 
-    // Pass 1: mark which snippet characters fall inside a matched token.
+    // Pass 1: mark which snippet characters fall inside a matched query token.
     bool hl[BIBLE_SRCH_SNIPPET_LEN];
-    memset(hl, 0, sizeof(hl));
-    for (size_t si = 0; si < slen; ) {
-        bool   found     = false;
-        size_t match_end = 0;
-        for (int t = 0; t < ntokens && !found; t++) {
-            const char* tok = tokens[t].s;
-            size_t      tl  = tokens[t].len;
-            if (tl == 0) continue;
-            if (srch_ignore_punct) {
-                size_t qi = 0, di = si;
-                while (qi < tl) {
-                    while (disp[di] && (uint8_t)disp[di] < 0x80 && ispunct((int)(uint8_t)disp[di])) di++;
-                    if (!disp[di]) break;
-                    if (tolower((uint8_t)disp[di]) != tolower((uint8_t)tok[qi])) break;
-                    di++; qi++;
-                }
-                if (qi == tl) { found = true; match_end = di; }
-            } else {
-                bool m = true;
-                for (size_t j = 0; j < tl && m; j++)
-                    if (!disp[si + j] || tolower((uint8_t)disp[si + j]) != tolower((uint8_t)tok[j])) m = false;
-                if (m) { found = true; match_end = si + tl; }
-            }
-        }
-        if (found) { for (size_t j = si; j < match_end && j < slen; j++) hl[j] = true; si = match_end; }
-        else si++;
-    }
+    markQueryMatches(disp, slen, hl);
 
     // Character advance in the loaded Tiny font.
     auto charAdv = [&](uint8_t c) -> int16_t {
