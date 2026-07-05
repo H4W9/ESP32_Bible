@@ -1262,12 +1262,18 @@ void BibleInterface::drawReadingLines() {
 
         int16_t line_idx = first + (int16_t)i;
 
-        // Update verse tracking before drawing
+        // Update verse tracking before drawing. Also flag blank rows (the stanza
+        // gaps between verses in songs) so a verse's highlight/underline doesn't
+        // extend onto the empty row that follows it.
+        bool row_blank = false;
         if (line_idx >= 0 && line_idx < (int16_t)line_count) {
             const char* ln = lines[line_idx];
             if (ln[0] == '^') {
                 const char* pipe = strchr(ln + 1, '|');
                 if (pipe) cur_verse_num = (uint8_t)atoi(ln + 1);
+            } else {
+                row_blank = true;                       // continuation row with no text?
+                for (const char* p = ln; *p; ++p) if (*p != ' ') { row_blank = false; break; }
             }
         }
 
@@ -1275,14 +1281,16 @@ void BibleInterface::drawReadingLines() {
         // instead highlights just the matched query text within the verse (see the
         // drawHighlighted lambda). Bookmarks are shown with an underline instead, so
         // a bookmarked verse still reads as "selected" (highlight) when you tap it.
+        // Blank rows are never highlighted/underlined.
         bool search_hl = (reading_from_search && highlight_verse > 0
                           && cur_verse_num == highlight_verse);
         uint16_t line_bg = bg();
-        if (sel_verse_first > 0
+        if (!row_blank && sel_verse_first > 0
                  && cur_verse_num >= sel_verse_first
                  && cur_verse_num <= sel_verse_last)
             line_bg = hi_bg;
-        bool is_bookmarked = (bm_v1 > 0 && cur_verse_num >= bm_v1 && cur_verse_num <= bm_v2);
+        bool is_bookmarked = (!row_blank && bm_v1 > 0
+                              && cur_verse_num >= bm_v1 && cur_verse_num <= bm_v2);
 
         line_spr.fillSprite(line_bg);
 
