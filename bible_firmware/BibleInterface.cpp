@@ -1215,19 +1215,6 @@ void BibleInterface::drawReadingLines() {
     // Highlight background — accent colour from Settings
     uint16_t hi_bg = sel_bg();
 
-    // Precompute bookmark verse-range for this chapter (first matching verse bookmark).
-    // Bookmark verse ranges are highlighted the same as search/selection highlights.
-    uint8_t bm_v1 = 0, bm_v2 = 0;
-    for (uint8_t k = 0; k < bm_count; k++) {
-        // Scope to the current songbook (book indices repeat across songbooks).
-        if (bookmarks[k].book == cur_book && bookmarks[k].chapter == cur_chapter
-                && bookmarks[k].verse_first > 0
-                && (mode == MODE_BIBLE || bookmarks[k].trans == cur_trans)) {
-            bm_v1 = bookmarks[k].verse_first;
-            bm_v2 = bookmarks[k].verse_last;
-            break;  // show first matching range only
-        }
-    }
 
     // Render a private-byte string into line_spr starting at (x0, y), painting the
     // accent highlight behind characters that match the search query (search jumps).
@@ -1293,8 +1280,20 @@ void BibleInterface::drawReadingLines() {
                  && cur_verse_num >= sel_verse_first
                  && cur_verse_num <= sel_verse_last)
             line_bg = hi_bg;
-        bool is_bookmarked = (!row_blank && bm_v1 > 0
-                              && cur_verse_num >= bm_v1 && cur_verse_num <= bm_v2);
+        // Underline any verse that falls inside ANY bookmark's range on this chapter
+        // (multiple bookmarks per chapter, e.g. verse 3 and verse 14, all underline).
+        bool is_bookmarked = false;
+        if (!row_blank && cur_verse_num > 0) {
+            for (uint8_t k = 0; k < bm_count; k++)
+                if (bookmarks[k].book == cur_book && bookmarks[k].chapter == cur_chapter
+                        && bookmarks[k].verse_first > 0
+                        && (mode == MODE_BIBLE || bookmarks[k].trans == cur_trans)
+                        && cur_verse_num >= bookmarks[k].verse_first
+                        && cur_verse_num <= bookmarks[k].verse_last) {
+                    is_bookmarked = true;
+                    break;
+                }
+        }
 
         line_spr.fillSprite(line_bg);
 
@@ -1302,6 +1301,7 @@ void BibleInterface::drawReadingLines() {
             const char* ln = lines[line_idx];
             char u8[BIBLE_LINE_BUF * 2];               // private codes → UTF-8 for the VLW font
             const int16_t txt_y = 1;                   // small top pad inside the line sprite
+            int16_t text_end = 4;                      // x just past the last glyph (for underline)
             // Smooth fonts render into a sprite via setCursor + printToSprite (the
             // sprite's own drawGlyph); drawString would draw to the physical TFT.
             if (ln[0] == '^') {
@@ -1317,14 +1317,16 @@ void BibleInterface::drawReadingLines() {
                     line_spr.setCursor(4, txt_y);
                     line_spr.printToSprite(num_str, strlen(num_str));
                     int16_t nx = vlwTextWidth(vfont, num_str);   // advance for content x
+                    int16_t cx = 4 + nx + 2;
                     if (search_hl) {
-                        drawHighlighted(pipe + 1, 4 + nx + 2, txt_y, line_bg);
+                        drawHighlighted(pipe + 1, cx, txt_y, line_bg);
                     } else {
                         line_spr.setTextColor(font_fg(), line_bg);
-                        line_spr.setCursor(4 + nx + 2, txt_y);
+                        line_spr.setCursor(cx, txt_y);
                         vlwPrivToUtf8(pipe + 1, u8, sizeof(u8));
                         line_spr.printToSprite(u8, strlen(u8));
                     }
+                    text_end = cx + vlwTextWidth(vfont, pipe + 1);
                 }
             } else {
                 if (search_hl) {
@@ -1335,10 +1337,12 @@ void BibleInterface::drawReadingLines() {
                     vlwPrivToUtf8(ln, u8, sizeof(u8));
                     line_spr.printToSprite(u8, strlen(u8));
                 }
+                text_end = 4 + vlwTextWidth(vfont, ln);
             }
-            // Bookmark indicator: underline in the verse-number colour.
-            if (is_bookmarked)
-                line_spr.drawFastHLine(4, (int16_t)lh - 2, scrW() - 12, verse_num_fg());
+            // Bookmark indicator: underline the verse number + text only (not the
+            // trailing empty space), in the verse-number colour.
+            if (is_bookmarked && text_end > 4)
+                line_spr.drawFastHLine(4, (int16_t)lh - 2, text_end - 4, verse_num_fg());
         }
 
         // pushSprite respects the viewport set above, clipping partial lines
@@ -2632,7 +2636,12 @@ void BibleInterface::handleSettingsInput() {
                                 cur_sec     = (numBooks() > 0) ? bookSection(cur_book) : 0;
                                 cur_chapter = 1;
                             }
-                        } else if (cur_book >= numBooks()) cur_book = 0;
+                        } else {
+                            // Bible has no .toc: switch the reading font to match the
+                            // selected translation (Fraktur German Bible vs normal).
+                            g_read_fraktur = transIsFraktur(cur_trans);
+                            if (cur_book >= numBooks()) cur_book = 0;
+                        }
                     }
                 }
                 redrawSettingsContent();
@@ -5928,14 +5937,20 @@ bool BibleInterface::searchBible(const char* query) {
     // Show search progress screen
     tft.fillScreen(bg());
     drawHeader("Searching...", false);
-    // Show query centred, rendering umlauts/ß properly
+    // Show query centred, rendering umlauts/ß properly. A Fraktur query (typed on the
+    // blackletter keyboard for a Fraktur Bible/songbook) carries round-s/ligature
+    // markers, so render it in the Fraktur body font — otherwise those markers show as
+    // raw '#'/'¡' in the normal font.
     {
+        bool q_frak = transIsFraktur(cur_trans);
+        if (q_frak) setUiFontFam(2, 2);          // Fraktur body font for the query glyphs
         int16_t qw = textWidthUTF8(query, 2);
         int16_t qx = (int16_t)(scrW() / 2) - qw / 2;
         int16_t qy = (int16_t)(contentY() + contentH() / 2 - 20);
         tft.setTextColor(fg(), bg());
         for (const char* p = query; *p; p++)
             qx += tftCharUTF8(tft, (uint8_t)*p, qx, qy, 2, fg());
+        if (q_frak) setUiFont(2);                // restore the normal UI font
     }
     drawSearchProgress(0, 1);
 

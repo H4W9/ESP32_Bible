@@ -266,8 +266,8 @@ def compound_word(w: str, d: dict, depth: int = 0):
     if w in d:
         return d[w]
     n = len(w)
-    for cut in range(n - 3, 2, -1):      # longest prefix first, both parts >= 3
-        pre = w[:cut]
+    for cut in range(n - 4, 2, -1):      # prefix >= 3, tail >= 4 (avoids splitting a
+        pre = w[:cut]                    # monomorphemic word into a short dict fragment)
         if pre not in d:
             continue
         rest = w[cut:]
@@ -276,11 +276,54 @@ def compound_word(w: str, d: dict, depth: int = 0):
         sub = compound_word(rest, d, depth + 1)
         if sub is not None:
             return d[pre] + sub
-        if rest[0] == 's' and len(rest) > 3 and rest[1:] not in SUFFIX_SET:
+        if rest[0] == 's' and len(rest) > 4 and rest[1:] not in SUFFIX_SET:
             sub = compound_word(rest[1:], d, depth + 1)   # Fugen-s -> round on prefix
             if sub is not None:
                 return d[pre] + ROUND_S + sub
     return None
+
+
+def compound_split(w: str, d: dict):
+    """Like compound_word but never uses a whole-word entry for w itself (recursion
+    may still use whole-word entries for the parts). Lets us detect when a stored
+    compound has a wrong long-s at its boundary (e.g. "auswerfen" vs "aus"+"werfen").
+    Requires the SECOND part to be >= 4 letters: real prefixed words (aus·werfen,
+    aus·land) have a substantial tail, whereas a monomorphemic word that merely happens
+    to split into a short dict fragment (Was·ser, Aus·ter) does not — so those keep
+    their correct long-s instead of being wrongly "corrected"."""
+    n = len(w)
+    for cut in range(n - 4, 2, -1):      # prefix >= 3, plain tail >= 4
+        pre = w[:cut]
+        if pre not in d:
+            continue
+        rest = w[cut:]
+        if rest in SUFFIX_SET:
+            continue
+        sub = compound_word(rest, d, 1)
+        if sub is not None:
+            return d[pre] + sub
+        if rest[0] == 's' and len(rest) > 4 and rest[1:] not in SUFFIX_SET:
+            sub = compound_word(rest[1:], d, 1)   # Fugen-s tail also >= 4
+            if sub is not None:
+                return d[pre] + ROUND_S + sub
+    return None
+
+
+def _is_round_s_correction(dict_val: str, split_val: str) -> bool:
+    """True iff split_val equals dict_val except that some long-s become round-s (#).
+    That means the compound split reconstructs the same word but fixes a boundary
+    Schluss-s the dictionary entry stored as a long-s — safe to prefer the split."""
+    if len(dict_val) != len(split_val):
+        return False
+    fixed = False
+    for a, b in zip(dict_val, split_val):
+        if a == b:
+            continue
+        if a == 's' and b == ROUND_S:
+            fixed = True
+        else:
+            return False
+    return fixed
 
 
 # ── Word conversion (dictionary -> compound -> rule), case-preserving ─────────
@@ -294,6 +337,12 @@ def frakturize_lower(w: str, d: dict, use_compound: bool, st: Stats) -> str:
     hit = d.get(w)
     if hit is not None:
         st.dict += 1
+        # If a clean compound split only differs by round-s at a boundary, prefer it —
+        # this repairs songbook entries stored with a wrong long-s (auswerfen -> au#werfen).
+        if use_compound:
+            cs = compound_split(w, d)
+            if cs is not None and _is_round_s_correction(hit, cs):
+                return cs
         return hit
     if use_compound:
         c = compound_word(w, d)
@@ -318,6 +367,10 @@ def convert_word(word: str, d: dict, use_compound: bool, st: Stats) -> str:
         st.plain += 1                    # genuinely mixed case (rare): leave as-is
         return word
     fk = frakturize_lower(word.lower(), d, use_compound, st)
+    # A word-final lone s is always a round-s in Fraktur — correct any long-s the
+    # source stored for it (e.g. "königs" -> "könig#"). Leave "ss" endings alone.
+    if len(fk) >= 2 and fk[-1] == 's' and fk[-2] != 's':
+        fk = fk[:-1] + ROUND_S
     if not lower:
         fk = fk[:1].upper() + fk[1:]     # capital S/ligature has no long/round variant
     return fk
