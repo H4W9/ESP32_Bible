@@ -453,6 +453,7 @@ private:
     uint16_t contentY() const { return hdrH(); }
     uint16_t contentH() const { return scrH() - hdrH() - navH(); }
     uint16_t lineH()         const;
+    uint8_t  frakReadPad()   const;   // extra top headroom for Fraktur reading (umlaut dots)
     uint16_t srchH()         const { return 50; }   // search result row height (ref + snippet)
     uint8_t  visItems()      const;
     uint8_t  visSearchItems() const { return (uint8_t)(contentH() / srchH()); }

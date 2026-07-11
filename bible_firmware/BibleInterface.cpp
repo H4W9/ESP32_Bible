@@ -547,11 +547,23 @@ static bool g_read_fraktur = false;   // set by loadToc; true → Fraktur readin
 static const uint8_t* vlwForSize(uint8_t idx);
 static uint8_t         vlwLineH(uint8_t idx);
 
+// The Fraktur reading font's capital umlaut dots (Ä Ö Ü) sit above its ascent, so they
+// need extra top headroom or they clip against the line-sprite top. Values are the
+// measured overshoot per size index (12,14,16,20,24,30 px). 0 for the normal font.
+uint8_t BibleInterface::frakReadPad() const {
+    if (!g_read_fraktur) return 0;
+    static const uint8_t PAD[] = { 2, 2, 3, 3, 4, 5 };
+    uint8_t idx = (font_num < VLW_FONT_COUNT) ? font_num : 3;
+    return (idx < (uint8_t)sizeof(PAD)) ? PAD[idx] : 3;
+}
+
 uint16_t BibleInterface::lineH() const {
     // Reading text is drawn with a smooth VLW font (normal or Fraktur family); the
-    // row height is the font's ascent+descent plus a little leading.
+    // row height is the font's ascent+descent plus a little leading. Fraktur adds top
+    // headroom (frakReadPad) for its high umlaut dots, keeping ~2px bottom leading.
     uint8_t idx = (font_num < VLW_FONT_COUNT) ? font_num : 3;
-    return (uint16_t)vlwLineH(idx) + 3;
+    uint8_t pad = frakReadPad();
+    return (uint16_t)vlwLineH(idx) + (pad ? (uint16_t)(pad + 2) : 3);
 }
 uint8_t BibleInterface::visItems() const { return contentH() / itemH(); }
 uint8_t BibleInterface::visLines() const { return contentH() / lineH(); }
@@ -1300,7 +1312,8 @@ void BibleInterface::drawReadingLines() {
         if (line_idx >= 0 && line_idx < (int16_t)line_count) {
             const char* ln = lines[line_idx];
             char u8[BIBLE_LINE_BUF * 2];               // private codes → UTF-8 for the VLW font
-            const int16_t txt_y = 1;                   // small top pad inside the line sprite
+            // Top pad: 1px normally; for Fraktur, enough to clear the high umlaut dots.
+            const int16_t txt_y = 1 + (int16_t)frakReadPad();
             int16_t text_end = 4;                      // x just past the last glyph (for underline)
             // Smooth fonts render into a sprite via setCursor + printToSprite (the
             // sprite's own drawGlyph); drawString would draw to the physical TFT.
