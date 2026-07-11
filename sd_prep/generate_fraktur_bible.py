@@ -94,7 +94,8 @@ PRE_REMAP = {
 
 # ── Fraktur markers ──────────────────────────────────────────────────────────
 ROUND_S = '#'                       # Schluss-s (round s)
-LIGATURES = (('ck', '¿'), ('tz', '|'), ('ch', '¡'))   # applied in this order
+LIG_CH  = '¡'                        # ch ligature (lowercase only; capitalized -> "Ch")
+LIGATURES = (('ck', '¿'), ('tz', '|'), ('ch', LIG_CH))   # applied in this order
 
 GERMAN_LETTERS = "A-Za-zÄÖÜäöüß"
 WORD_RE      = re.compile(f"[{GERMAN_LETTERS}]+")
@@ -372,7 +373,13 @@ def convert_word(word: str, d: dict, use_compound: bool, st: Stats) -> str:
     if len(fk) >= 2 and fk[-1] == 's' and fk[-2] != 's':
         fk = fk[:-1] + ROUND_S
     if not lower:
-        fk = fk[:1].upper() + fk[1:]     # capital S/ligature has no long/round variant
+        # A capitalized word starting with "ch" uses a real capital C + h, not the
+        # lowercase ch-ligature (which has no capital form): Christus -> "Christu#",
+        # not "¡ristu#". (Lowercase words keep the ligature.)
+        if fk[:1] == LIG_CH:
+            fk = 'Ch' + fk[1:]
+        else:
+            fk = fk[:1].upper() + fk[1:]     # capital S/ligature has no long/round variant
     return fk
 
 
