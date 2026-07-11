@@ -95,7 +95,8 @@ PRE_REMAP = {
 # ── Fraktur markers ──────────────────────────────────────────────────────────
 ROUND_S = '#'                       # Schluss-s (round s)
 LIG_CH  = '¡'                        # ch ligature (lowercase only; capitalized -> "Ch")
-LIGATURES = (('ck', '¿'), ('tz', '|'), ('ch', LIG_CH))   # applied in this order
+LIG_TZ  = '|'                        # tz ligature (only a genuine tz digraph, not acht·zehn)
+LIGATURES = (('ck', '¿'), ('tz', LIG_TZ), ('ch', LIG_CH))   # applied in this order
 
 GERMAN_LETTERS = "A-Za-zÄÖÜäöüß"
 WORD_RE      = re.compile(f"[{GERMAN_LETTERS}]+")
@@ -259,55 +260,57 @@ def rule_word(w: str) -> str:
 
 
 # ── Compound splitting against the dictionary ────────────────────────────────
-def compound_word(w: str, d: dict, depth: int = 0):
-    """Decompose w into dictionary words (optionally joined by a Fugen-s). Returns the
-    concatenated Fraktur form, or None if it can't be split cleanly."""
+def _boundary(v: str) -> str:
+    """A word-part's trailing long-s is a round-s (Schluss-s) at a compound boundary
+    (Königsberg -> könig#berg); the dictionary sometimes stored it as a long-s."""
+    if len(v) >= 2 and v[-1] == 's' and v[-2] != 's':
+        return v[:-1] + ROUND_S
+    return v
+
+
+def _split_at(w: str, d: dict, use_whole: bool, depth: int):
+    """Shared splitter: decompose w into dictionary words (optionally joined by a
+    Fugen-s), rounding each word-part's trailing boundary-s. `use_whole` lets the top
+    caller forbid a whole-word entry for w (so a stored compound can be re-checked)."""
     if depth > 5:
         return None
-    if w in d:
+    if use_whole and w in d:
         return d[w]
     n = len(w)
-    for cut in range(n - 4, 2, -1):      # prefix >= 3, tail >= 4 (avoids splitting a
-        pre = w[:cut]                    # monomorphemic word into a short dict fragment)
-        if pre not in d:
-            continue
-        rest = w[cut:]
-        if rest in SUFFIX_SET:           # stem + derivational suffix: let the rule
-            continue                     # place the round-s (le#bar, not les+bar)
-        sub = compound_word(rest, d, depth + 1)
-        if sub is not None:
-            return d[pre] + sub
-        if rest[0] == 's' and len(rest) > 4 and rest[1:] not in SUFFIX_SET:
-            sub = compound_word(rest[1:], d, depth + 1)   # Fugen-s -> round on prefix
-            if sub is not None:
-                return d[pre] + ROUND_S + sub
-    return None
-
-
-def compound_split(w: str, d: dict):
-    """Like compound_word but never uses a whole-word entry for w itself (recursion
-    may still use whole-word entries for the parts). Lets us detect when a stored
-    compound has a wrong long-s at its boundary (e.g. "auswerfen" vs "aus"+"werfen").
-    Requires the SECOND part to be >= 4 letters: real prefixed words (aus·werfen,
-    aus·land) have a substantial tail, whereas a monomorphemic word that merely happens
-    to split into a short dict fragment (Was·ser, Aus·ter) does not — so those keep
-    their correct long-s instead of being wrongly "corrected"."""
-    n = len(w)
-    for cut in range(n - 4, 2, -1):      # prefix >= 3, plain tail >= 4
+    for cut in range(n - 4, 2, -1):          # prefix >= 3, rest >= 4
         pre = w[:cut]
         if pre not in d:
             continue
         rest = w[cut:]
-        if rest in SUFFIX_SET:
-            continue
-        sub = compound_word(rest, d, 1)
-        if sub is not None:
-            return d[pre] + sub
-        if rest[0] == 's' and len(rest) > 4 and rest[1:] not in SUFFIX_SET:
-            sub = compound_word(rest[1:], d, 1)   # Fugen-s tail also >= 4
+        # Direct join: the tail (rest) must be substantial (>= 4, from the range) to
+        # avoid splitting a monomorphemic word into a coincidental dict fragment.
+        if rest not in SUFFIX_SET:
+            sub = _split_at(rest, d, True, depth + 1)
             if sub is not None:
-                return d[pre] + ROUND_S + sub
+                return _boundary(d[pre]) + sub
+        # Explicit Fugen-s (prefix + s + tail): the linking s is a round-s on the
+        # prefix. A short (3-letter) tail is only allowed after a long (>= 5) prefix
+        # whose stem is itself a dict word, so Königs·tal splits but Für·sten,
+        # Prie·ster, Was·ser don't.
+        if rest[0] == 's':
+            tail = rest[1:]
+            if (len(tail) >= 4 or (len(pre) >= 5 and len(tail) >= 3)) \
+                    and tail not in SUFFIX_SET:
+                sub = _split_at(tail, d, True, depth + 1)
+                if sub is not None:
+                    return _boundary(d[pre]) + ROUND_S + sub
     return None
+
+
+def compound_word(w: str, d: dict, depth: int = 0):
+    """Decompose w into dictionary words, reusing a whole-word entry for w if present."""
+    return _split_at(w, d, True, depth)
+
+
+def compound_split(w: str, d: dict):
+    """Like compound_word but never uses a whole-word entry for w itself — lets us spot a
+    stored compound whose boundary long-s should be round (auswerfen -> au#werfen)."""
+    return _split_at(w, d, False, 0)
 
 
 def _is_round_s_correction(dict_val: str, split_val: str) -> bool:
@@ -368,6 +371,10 @@ def convert_word(word: str, d: dict, use_compound: bool, st: Stats) -> str:
         st.plain += 1                    # genuinely mixed case (rare): leave as-is
         return word
     fk = frakturize_lower(word.lower(), d, use_compound, st)
+    # "chtz" (¡ + tz-ligature) never occurs inside a German morpheme — it only spans a
+    # compound boundary (acht·zehn, Nacht·zug), so the t and z belong to different parts
+    # and must not be a tz-ligature: a¡|ehn -> a¡tzehn.
+    fk = fk.replace(LIG_CH + LIG_TZ, LIG_CH + 'tz')
     # A word-final lone s is always a round-s in Fraktur — correct any long-s the
     # source stored for it (e.g. "königs" -> "könig#"). Leave "ss" endings alone.
     if len(fk) >= 2 and fk[-1] == 's' and fk[-2] != 's':
