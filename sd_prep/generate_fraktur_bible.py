@@ -42,8 +42,8 @@ USAGE
   python generate_fraktur_bible.py kjv.xml      # -> refused (not German)
 
   --dict DIR/GLOB   where to read the Fraktur songbooks from for the
-                    reference dictionary (default: ./songs_fraktur and
-                    ./songs/*_fraktur.xml). Point at the .xml the songs
+                    reference dictionary (default: all *_fraktur.xml under
+                    ./songs_fraktur and ./songs). Point at the .xml the songs
                     generator produced.
   --dict-xlsx FILE  additionally seed the dictionary from a
                     SngData_Fraktur.xlsx (DFX columns).
@@ -182,8 +182,8 @@ def build_dictionary(dict_args, xlsx_path):
             else:
                 files += glob.glob(a)
     else:
-        for d in ("songs_fraktur", "songs"):
-            files += glob.glob(os.path.join(d, "*_fraktur.xml"))
+        for base in ("songs_fraktur", "songs"):    # all Fraktur songbook editions
+            files += glob.glob(os.path.join(base, "*_fraktur.xml"))
     files = sorted(set(files))
 
     for fp in files:
@@ -268,10 +268,18 @@ def _boundary(v: str) -> str:
     return v
 
 
-def _split_at(w: str, d: dict, use_whole: bool, depth: int):
+# Short words that legitimately end in a Schluss-s when used as a compound prefix
+# (separable prefixes + the genitive article) — needed because most 3-letter s-endings
+# (ges, das, was, als, bis) are NOT prefixes and must not seed a split.
+SEP_S_PREFIX = {"aus", "los", "raus", "des"}
+
+
+def _split_at(w: str, d: dict, use_whole: bool, depth: int, strict: bool = False):
     """Shared splitter: decompose w into dictionary words (optionally joined by a
     Fugen-s), rounding each word-part's trailing boundary-s. `use_whole` lets the top
-    caller forbid a whole-word entry for w (so a stored compound can be re-checked)."""
+    caller forbid a whole-word entry for w (so a stored compound can be re-checked).
+    In `strict` mode the direct-join prefix must be a real s-ending prefix or >= 4
+    letters, so a correct entry isn't "corrected" by a bogus split (Ges·icht)."""
     if depth > 5:
         return None
     if use_whole and w in d:
@@ -283,9 +291,11 @@ def _split_at(w: str, d: dict, use_whole: bool, depth: int):
             continue
         rest = w[cut:]
         # Direct join: the tail (rest) must be substantial (>= 4, from the range) to
-        # avoid splitting a monomorphemic word into a coincidental dict fragment.
-        if rest not in SUFFIX_SET:
-            sub = _split_at(rest, d, True, depth + 1)
+        # avoid splitting a monomorphemic word into a coincidental dict fragment; in
+        # strict mode the prefix must also be a plausible one (not "ges", "das", …).
+        prefix_ok = (not strict) or len(pre) >= 4 or pre in SEP_S_PREFIX
+        if prefix_ok and rest not in SUFFIX_SET:
+            sub = _split_at(rest, d, True, depth + 1, strict)
             if sub is not None:
                 return _boundary(d[pre]) + sub
         # Explicit Fugen-s (prefix + s + tail): the linking s is a round-s on the
@@ -296,7 +306,7 @@ def _split_at(w: str, d: dict, use_whole: bool, depth: int):
             tail = rest[1:]
             if (len(tail) >= 4 or (len(pre) >= 5 and len(tail) >= 3)) \
                     and tail not in SUFFIX_SET:
-                sub = _split_at(tail, d, True, depth + 1)
+                sub = _split_at(tail, d, True, depth + 1, strict)
                 if sub is not None:
                     return _boundary(d[pre]) + ROUND_S + sub
     return None
@@ -308,9 +318,10 @@ def compound_word(w: str, d: dict, depth: int = 0):
 
 
 def compound_split(w: str, d: dict):
-    """Like compound_word but never uses a whole-word entry for w itself — lets us spot a
-    stored compound whose boundary long-s should be round (auswerfen -> au#werfen)."""
-    return _split_at(w, d, False, 0)
+    """Like compound_word but never uses a whole-word entry for w itself, and uses strict
+    prefixes — lets us spot a stored compound whose boundary long-s should be round
+    (auswerfen -> au#werfen) without mis-"correcting" a good entry (Gesicht)."""
+    return _split_at(w, d, False, 0, strict=True)
 
 
 def _is_round_s_correction(dict_val: str, split_val: str) -> bool:
@@ -375,6 +386,12 @@ def convert_word(word: str, d: dict, use_compound: bool, st: Stats) -> str:
     # compound boundary (acht·zehn, Nacht·zug), so the t and z belong to different parts
     # and must not be a tz-ligature: a¡|ehn -> a¡tzehn.
     fk = fk.replace(LIG_CH + LIG_TZ, LIG_CH + 'tz')
+    # A round-s before a k/p cluster (sk/sp) only occurs at a Fugen boundary
+    # (Arbeits·kraft); in a monomorphemic word it is a long-s. Fix songbook entries that
+    # stored it round (Dama#ku# -> Damasku#) — only when the word doesn't decompose.
+    if use_compound and (ROUND_S + 'k' in fk or ROUND_S + 'p' in fk) \
+            and compound_split(word.lower(), d) is None:
+        fk = fk.replace(ROUND_S + 'k', 'sk').replace(ROUND_S + 'p', 'sp')
     # A word-final lone s is always a round-s in Fraktur — correct any long-s the
     # source stored for it (e.g. "königs" -> "könig#"). Leave "ss" endings alone.
     if len(fk) >= 2 and fk[-1] == 's' and fk[-2] != 's':
@@ -483,7 +500,7 @@ def main():
     ap.add_argument("inputs", nargs="+", help="German OSIS Bible .xml file(s)")
     ap.add_argument("--dict", nargs="*", default=None,
                     help="Fraktur songbook .xml dir(s)/glob(s) for the reference "
-                         "dictionary (default: ./songs_fraktur and ./songs/*_fraktur.xml)")
+                         "dictionary (default: all *_fraktur.xml under songs_fraktur/ and songs/)")
     ap.add_argument("--dict-xlsx", default=None,
                     help="also seed the dictionary from a SngData_Fraktur.xlsx")
     ap.add_argument("--out", default="bible_fraktur_out", help="output directory")

@@ -24,7 +24,16 @@ sd_prep/__pycache__/
 sd_prep/songs/
 sd_prep/songs_fraktur/
 sd_prep/dictionary/
+sd_prep/dictionary_out/
+sd_prep/dict_out/
 sd_prep/bible_fraktur_out/
+
+# Dictionary generator source dumps (Kaikki Wiktionary JSONL, dict.cc txt) — very
+# large, downloaded separately, kept local and out of the repo.
+sd_prep/*.jsonl
+sd_prep/kaikki*
+sd_prep/*-DE.txt
+sd_prep/*-EN.txt
 
 # Source Bible translations (OSIS XML) fed to generate_fraktur_bible.py, and any
 # loose Bible XML — kept local, out of the repo (like the source spreadsheets).
