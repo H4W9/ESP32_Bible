@@ -104,6 +104,14 @@ FRAK_WORD_RE = re.compile(f"[{GERMAN_LETTERS}#¡¿|–”]+")   # a word incl. F
 TAG_RE       = re.compile(r"(<[^>]*>)", re.S)
 ENT_RE       = re.compile(r"(&#?[0-9A-Za-z]+;)")
 
+# Optional German word list (from the generated German dictionaries) used ONLY to
+# extend compound splitting to real words the songbooks don't contain (e.g. Mannes·altern
+# — "altern" isn't a hymn word). A part not in the Fraktur dict is then spelled by the
+# rule. Empty unless a dictionary is found/passed; the script works fine without it.
+GERMAN_WORDS = frozenset()
+DEFAULT_GERMAN_DICT = ("dictionary_out/wiktionary-de.xml",)
+_DICT_HW_RE = re.compile(r'<verse[^>]*>([^<]*?) - ')      # headword before " - "
+
 # Suffixes before which a stem-final s is round (rule fallback only). Deliberately
 # excludes -chen / -lein: they're indistinguishable by rule from an "sch"+en word
 # (Häus-chen vs frisch-en), so those diminutives are left to the dictionary instead.
@@ -209,6 +217,29 @@ def build_dictionary(dict_args, xlsx_path):
     return d
 
 
+def build_german_wordset(paths):
+    """Collect single-word German headwords (text before ' - ') from the generated
+    German dictionary XML(s). Used only to extend compound splitting (see _split_at)."""
+    words = set()
+    used = 0
+    for p in paths:
+        if not os.path.isfile(p):
+            continue
+        used += 1
+        with open(p, encoding="utf-8", errors="replace") as f:
+            for line in f:
+                m = _DICT_HW_RE.search(line)
+                if not m:
+                    continue
+                hw = re.sub(r"\s*[\[{].*$", "", m.group(1)).strip()   # drop [POS]/{...}
+                if hw and " " not in hw and WORD_RE.fullmatch(hw):
+                    words.add(hw.lower())
+    if used:
+        print(f"German word list: {len(words):,} words from {used} dictionary file(s) "
+              f"(extends compound splitting)")
+    return frozenset(words)
+
+
 def _seed_from_xlsx(path, counts):
     try:
         import openpyxl
@@ -274,20 +305,34 @@ def _boundary(v: str) -> str:
 SEP_S_PREFIX = {"aus", "los", "raus", "des"}
 
 
-def _split_at(w: str, d: dict, use_whole: bool, depth: int, strict: bool = False):
+def _known_part(w: str, d: dict, use_german: bool) -> bool:
+    """Is w a usable compound part: in the Fraktur dict, or (when allowed) a real German
+    word we can spell with the rule (>= 4 letters, to avoid short obscure fragments)?"""
+    return w in d or (use_german and len(w) >= 4 and w in GERMAN_WORDS)
+
+
+def _part_frak(w: str, d: dict) -> str:
+    """Fraktur form of a compound part: the Fraktur dict spelling, else the rule."""
+    return d[w] if w in d else rule_word(w)
+
+
+def _split_at(w: str, d: dict, use_whole: bool, depth: int,
+              strict: bool = False, use_german: bool = False):
     """Shared splitter: decompose w into dictionary words (optionally joined by a
     Fugen-s), rounding each word-part's trailing boundary-s. `use_whole` lets the top
     caller forbid a whole-word entry for w (so a stored compound can be re-checked).
     In `strict` mode the direct-join prefix must be a real s-ending prefix or >= 4
-    letters, so a correct entry isn't "corrected" by a bogus split (Ges·icht)."""
+    letters, so a correct entry isn't "corrected" by a bogus split (Ges·icht). With
+    `use_german`, parts may also be real German words (spelled by the rule) so
+    compounds the songbooks lack still split (Mannes·altern)."""
     if depth > 5:
         return None
-    if use_whole and w in d:
+    if use_whole and w in d:                 # songbook has it whole: accurate spelling
         return d[w]
     n = len(w)
     for cut in range(n - 4, 2, -1):          # prefix >= 3, rest >= 4
         pre = w[:cut]
-        if pre not in d:
+        if not _known_part(pre, d, use_german):
             continue
         rest = w[cut:]
         # Direct join: the tail (rest) must be substantial (>= 4, from the range) to
@@ -295,26 +340,32 @@ def _split_at(w: str, d: dict, use_whole: bool, depth: int, strict: bool = False
         # strict mode the prefix must also be a plausible one (not "ges", "das", …).
         prefix_ok = (not strict) or len(pre) >= 4 or pre in SEP_S_PREFIX
         if prefix_ok and rest not in SUFFIX_SET:
-            sub = _split_at(rest, d, True, depth + 1, strict)
+            sub = _split_at(rest, d, True, depth + 1, strict, use_german)
             if sub is not None:
-                return _boundary(d[pre]) + sub
+                return _boundary(_part_frak(pre, d)) + sub
         # Explicit Fugen-s (prefix + s + tail): the linking s is a round-s on the
         # prefix. A short (3-letter) tail is only allowed after a long (>= 5) prefix
         # whose stem is itself a dict word, so Königs·tal splits but Für·sten,
-        # Prie·ster, Was·ser don't.
-        if rest[0] == 's':
+        # Prie·ster, Was·ser don't. In strict mode the prefix must be >= 4 so a good
+        # entry isn't mis-"corrected" via a bogus Fugen split (zwi·s·chen).
+        if rest[0] == 's' and ((not strict) or len(pre) >= 4):
             tail = rest[1:]
             if (len(tail) >= 4 or (len(pre) >= 5 and len(tail) >= 3)) \
                     and tail not in SUFFIX_SET:
-                sub = _split_at(tail, d, True, depth + 1, strict)
+                sub = _split_at(tail, d, True, depth + 1, strict, use_german)
                 if sub is not None:
-                    return _boundary(d[pre]) + ROUND_S + sub
+                    return _boundary(_part_frak(pre, d)) + ROUND_S + sub
+    # No dictionary split: if the whole thing is a real German word not in the songbooks
+    # (e.g. an atomic compound tail like "altern"), spell it by rule as a last resort.
+    if use_whole and use_german and len(w) >= 4 and w in GERMAN_WORDS:
+        return rule_word(w)
     return None
 
 
 def compound_word(w: str, d: dict, depth: int = 0):
-    """Decompose w into dictionary words, reusing a whole-word entry for w if present."""
-    return _split_at(w, d, True, depth)
+    """Decompose w into words (Fraktur dict + real German words), reusing a whole-word
+    entry for w if present. Used for words the songbooks don't have as a whole."""
+    return _split_at(w, d, True, depth, use_german=True)
 
 
 def compound_split(w: str, d: dict):
@@ -386,12 +437,6 @@ def convert_word(word: str, d: dict, use_compound: bool, st: Stats) -> str:
     # compound boundary (acht·zehn, Nacht·zug), so the t and z belong to different parts
     # and must not be a tz-ligature: a¡|ehn -> a¡tzehn.
     fk = fk.replace(LIG_CH + LIG_TZ, LIG_CH + 'tz')
-    # A round-s before a k/p cluster (sk/sp) only occurs at a Fugen boundary
-    # (Arbeits·kraft); in a monomorphemic word it is a long-s. Fix songbook entries that
-    # stored it round (Dama#ku# -> Damasku#) — only when the word doesn't decompose.
-    if use_compound and (ROUND_S + 'k' in fk or ROUND_S + 'p' in fk) \
-            and compound_split(word.lower(), d) is None:
-        fk = fk.replace(ROUND_S + 'k', 'sk').replace(ROUND_S + 'p', 'sp')
     # A word-final lone s is always a round-s in Fraktur — correct any long-s the
     # source stored for it (e.g. "königs" -> "könig#"). Leave "ss" endings alone.
     if len(fk) >= 2 and fk[-1] == 's' and fk[-2] != 's':
@@ -506,9 +551,18 @@ def main():
     ap.add_argument("--out", default="bible_fraktur_out", help="output directory")
     ap.add_argument("--no-compound", action="store_true",
                     help="disable dictionary-based compound splitting")
+    ap.add_argument("--german-dict", nargs="*", default=None,
+                    help="German dictionary .xml(s) whose headwords extend compound "
+                         "splitting (default: dictionary_out/wiktionary-de.xml if present)")
+    ap.add_argument("--no-german", action="store_true",
+                    help="don't use a German word list (songbook dictionary only)")
     ap.add_argument("--list-unknown", default=None,
                     help="write rule-fallback words (not covered by the songbooks) here")
     args = ap.parse_args()
+
+    if not args.no_german:
+        global GERMAN_WORDS
+        GERMAN_WORDS = build_german_wordset(args.german_dict or list(DEFAULT_GERMAN_DICT))
 
     # Expand input globs / directories.
     inputs = []
