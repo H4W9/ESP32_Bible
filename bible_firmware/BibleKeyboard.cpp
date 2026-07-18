@@ -37,24 +37,33 @@ static const char ROW3_ALPHA[] = "zxcvbnm.";  // cols 0-7; cols 8-9 = CAPS key
 // moving them here frees that row for wider SPACE / BKSP / OK keys). Bytes are the
 // private codes used in verse storage so a search compares directly: 0x81=ä 0x83=ö
 // 0x85=ü 0x86=ß. With CAPS on, ä/ö/ü emit 0x80/0x82/0x84 (ß has no uppercase).
-static const char ROW0_SYM[] = { (char)0x81, (char)0x83, (char)0x85, (char)0x86, 0 };
-static const char ROW1_SYM[] = "!?.,;:'\"-_";
-static const char ROW2_SYM[] = "()[]{}<>/\\";
-static const char ROW3_SYM[] = "@#$%&*+=`~";
+// Row 0 keeps the umlauts company with the most-used marks — the row was only half
+// full — which frees slots further down so every punctuation character from the
+// original symbol page is still here (nothing dropped). Row 3 is capped at 8 keys
+// because CAPS sits at cols 8-9 of it, matching its position on the alpha page; the
+// two spare slots go to row 2, which is centred.
+static const char ROW0_SYM[] = { (char)0x81, (char)0x83, (char)0x85, (char)0x86,
+                                 '!', '?', '.', ',', ';', ':', 0 }; // ä ö ü ß ! ? . , ; :
+static const char ROW1_SYM[] = "'\"-_^|@#$%";
+static const char ROW2_SYM[] = "()[]{}<>";
+static const char ROW3_SYM[] = "/\\&*+=`~";
 
 // Fraktur symbol page — used only when a Fraktur songbook is open. Exposes the
 // blackletter ligatures and German typographic marks so they can be searched.
 // Bytes emitted match verse-storage encoding so the search compares directly:
 //   '#'=long-s ſ  '|'=tz  0xA1=ch  0xBF=ck  0xB4=´
 //   0x87=„ 0x88=" 0x89=‚ 0x8A=' 0x8B=' 0x8C=– 0x8D=— 0x8E=…
-// Row 0 is the umlauts (same as the normal page); the ligature/typographic sets and
-// punctuation shift down a row to make room.
-static const char FROW0_SYM[] = { (char)0x81, (char)0x83, (char)0x85, (char)0x86, 0 }; // ä ö ü ß
-static const char FROW1_SYM[] = { '#', '|', (char)0xA1, (char)0xBF, (char)0xB4,
-                                  '.', ',', '?', 0 };                 // ſ tz ch ck ´ . , ?
-static const char FROW2_SYM[] = { (char)0x87, (char)0x88, (char)0x89, (char)0x8A,
-                                  (char)0x8B, (char)0x8C, (char)0x8D, (char)0x8E, 0 }; // „ " ‚ ' ' – — …
-static const char FROW3_SYM[] = "!?-()'\":";                          // ! ? - ( ) ' " :
+// Row 0 is the umlauts plus the blackletter ligatures; row 1 is the typographic set.
+// Row 3 is capped at 8 keys to leave cols 8-9 for CAPS (same position as the alpha
+// page), so the slack lands in row 2, which is centred.
+static const char FROW0_SYM[] = { (char)0x81, (char)0x83, (char)0x85, (char)0x86,
+                                  '#', '|', (char)0xA1, (char)0xBF,
+                                  (char)0xB4, '-', 0 };  // ä ö ü ß ſ tz ch ck ´ -
+static const char FROW1_SYM[] = { (char)0x87, (char)0x88, (char)0x89, (char)0x8A,
+                                  (char)0x8B, (char)0x8C, (char)0x8D, (char)0x8E,
+                                  '\'', '"', 0 };        // „ " ‚ ' ' – — … ' "
+static const char FROW2_SYM[] = ".,!?:;/";               // 7 keys, centred
+static const char FROW3_SYM[] = "()@&*+=_";              // 8 keys, CAPS at cols 8-9
 
 // Control row (row 4) — now only 5 keys (the umlauts moved to the symbol page):
 //  CANCEL(1.5)  SYM/ABC(1.5)  SPACE(4)  BKSP(1.5)  OK(1.5) = 10 cells
@@ -352,21 +361,25 @@ static void drawTextLine(TFT_eSPI& tft, uint16_t fg, uint16_t bg,
         while (viewStart < cursor && kbSubW(tft, p, viewStart, cursor) > maxW) viewStart++;
     }
 
+    // Draw the visible glyphs, taking the caret position from the REAL pen position
+    // rather than re-measuring. drawGlyph() advances the cursor by the font's own
+    // advance; summing textWidth() per character can differ from that (side bearings,
+    // multi-byte codepoints), and in the Fraktur font the error accumulated so the
+    // caret drifted further from the text with every keystroke.
     tft.setTextColor(fg, bg);
     tft.setCursor(tx, ty);
-    int16_t w = 0;
-    for (size_t i = viewStart; i < n; i++) {
-        int16_t cw = kbCharW(tft, (uint8_t)p[i]);
-        if (w + cw > maxW) break;
+    int16_t caretX = -1;
+    for (size_t i = viewStart; i <= n; i++) {
+        int16_t penX = tft.getCursorX();
+        if (i == cursor) caretX = penX;              // exact: same advance as drawn
+        if (i >= n) break;
+        if (penX + kbCharW(tft, (uint8_t)p[i]) > tx + maxW) break;   // would overflow
         tft.drawGlyph(kbPrivToUnicode((uint8_t)p[i]));
-        w += cw;
     }
 
-    // Caret — only when the cursor is inside the visible window.
-    if (cursor >= viewStart) {
-        int16_t caretX = tx + kbSubW(tft, p, viewStart, cursor);
-        if (caretX <= bx + bw - 3) tft.fillRect(caretX, ty, 2, 18, fg);
-    }
+    // Caret — only when the cursor fell inside the drawn (visible) window.
+    if (caretX >= 0 && caretX <= bx + bw - 3)
+        tft.fillRect(caretX, ty, 2, 18, fg);
 
     // Char count "used/max" at the top-right of the header (normal UI font).
     tft.loadFont(g_kb_font_main);
@@ -435,13 +448,12 @@ static void drawKeyboard(TFT_eSPI& tft, uint16_t fg, uint16_t bg,
         int         rowLen = (int)strlen(row);
         int16_t     rowY   = kY + (int16_t)r * cH;
 
-        // Centre rows except alpha row 3 which is left-aligned for the CAPS key
-        int16_t xOff;
-        if (layout == KB_ALPHA && r == 3) {
-            xOff = 0;
-        } else {
-            xOff = (int16_t)((KB_COLS - rowLen) * cW / 2);
-        }
+        // CAPS lives at cols 8-9 of row 3 on BOTH pages, so it never moves under your
+        // thumb when you switch between abc and sym. That row is left-aligned to make
+        // space for it; every other row is centred.
+        bool rowHasCaps = (r == 3);
+        int16_t xOff = rowHasCaps ? 0
+                                  : (int16_t)((KB_COLS - rowLen) * cW / 2);
 
         for (int i = 0; i < rowLen; i++) {
             int16_t kx = (int16_t)i * cW + xOff;
@@ -466,8 +478,8 @@ static void drawKeyboard(TFT_eSPI& tft, uint16_t fg, uint16_t bg,
             }
         }
 
-        // CAPS key occupies cols 8-9 in alpha layout row 3
-        if (layout == KB_ALPHA && r == 3) {
+        // CAPS key occupies cols 8-9 of the left-aligned row
+        if (rowHasCaps) {
             int16_t cx  = 8 * cW;
             int16_t cw2 = 2 * cW;
             // Three states: off = plain "CAPS", shift-once = yellow "Caps"
@@ -637,26 +649,17 @@ static KbResult handleKbTouch(uint16_t tx, uint16_t ty,
         const char* rowStr = rows[row];
         int rowLen = (int)strlen(rowStr);
 
-        if (layout == KB_ALPHA && row == 3) {
-            // Cols 8-9 = CAPS
-            if ((int16_t)tx >= 8 * cW) {
-                if (hitRect) { hitRect[0] = 8 * cW; hitRect[1] = rowY; hitRect[2] = 2 * cW; hitRect[3] = cH; }
-                if (hitKind) *hitKind = KK_CAPS;
-                return KBR_CAPS;
-            }
-            // Cols 0-7 = chars
-            int col = (int16_t)tx / cW;
-            if (col < 0 || col >= rowLen) return KBR_NONE;
-            char c = rowStr[col];
-            if (c >= 'a' && c <= 'z' && caps) c = (char)(c - 'a' + 'A');
-            if (hitRect) { hitRect[0] = (int16_t)col * cW; hitRect[1] = rowY; hitRect[2] = cW; hitRect[3] = cH; }
-            if (hitKind) *hitKind = KK_CHAR;
-            if (hitChar) *hitChar = c;
-            return kbInsertByte(buffer, bufLen, cursor, c) ? KBR_CHANGED : KBR_NONE;
+        // Row 3 carries the CAPS key on both pages: left-aligned with CAPS at
+        // cols 8-9; geometry must match drawKeyboard().
+        bool rowHasCaps = (row == 3);
+        if (rowHasCaps && (int16_t)tx >= 8 * cW) {
+            if (hitRect) { hitRect[0] = 8 * cW; hitRect[1] = rowY; hitRect[2] = 2 * cW; hitRect[3] = cH; }
+            if (hitKind) *hitKind = KK_CAPS;
+            return KBR_CAPS;
         }
 
-        // All other rows: centred
-        int16_t xOff = (int16_t)((KB_COLS - rowLen) * cW / 2);
+        int16_t xOff = rowHasCaps ? 0
+                                  : (int16_t)((KB_COLS - rowLen) * cW / 2);
         int col = ((int16_t)tx - xOff) / cW;
         if (col < 0 || col >= rowLen) return KBR_NONE;
         char c = rowStr[col];
