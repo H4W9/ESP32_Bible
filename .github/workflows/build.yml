@@ -157,22 +157,31 @@ jobs:
             --warnings default \
             bible_firmware
 
-      # ── 6. Rename the app binary → esp32-library_v<version>_<board>.bin ─────
-      - name: Rename binary
+      # ── 6. Rename to the release template ───────────────────────────────────
+      #   esp32-library_v<ver>_<board>.bin  (+ _merged / _bootloader / _partitions)
+      # Unlike the FlipSocial template, EVERY image carries the board name: V6.1 is a
+      # different chip (esp32 vs esp32c5) with a different partition table, so its
+      # bootloader/partitions are NOT byte-identical to the C5 boards' and would
+      # collide when the release job merges the three matrix artifacts.
+      - name: Rename binaries
         run: |
           VER=$(grep -oP '#define\s+BIBLE_FW_VERSION\s+"\K[^"]+' bible_firmware/configs.h)
           echo "Firmware version: $VER"
           mkdir -p out
-          cp "dist/${{ matrix.board }}/bible_firmware.ino.bin" \
-             "out/esp32-library_v${VER}_${{ matrix.short }}.bin"
+          D="dist/${{ matrix.board }}"
+          B="esp32-library_v${VER}_${{ matrix.short }}"
+          cp "$D/bible_firmware.ino.bin" "out/${B}.bin"
+          [ -f "$D/bible_firmware.ino.merged.bin" ]     && cp "$D/bible_firmware.ino.merged.bin"     "out/${B}_merged.bin"     || true
+          [ -f "$D/bible_firmware.ino.bootloader.bin" ] && cp "$D/bible_firmware.ino.bootloader.bin" "out/${B}_bootloader.bin" || true
+          [ -f "$D/bible_firmware.ino.partitions.bin" ] && cp "$D/bible_firmware.ino.partitions.bin" "out/${B}_partitions.bin" || true
           ls -l out
 
-      # ── 7. Artifact (one renamed .bin per board; collected by the package job)
-      - name: Upload ${{ matrix.short }} binary
+      # ── 7. Artifact (this board's images; collected by package + release) ────
+      - name: Upload ${{ matrix.short }} binaries
         uses: actions/upload-artifact@v4
         with:
           name: bin-${{ matrix.short }}
-          path: out/esp32-library_*.bin
+          path: out/*
           if-no-files-found: error
 
   # ═══════════════════════════════════════════════════════════════════════════
@@ -223,17 +232,38 @@ jobs:
           path: out/*
           if-no-files-found: error
 
-      # Optional release: on a v* tag push, or a manual run with release=true.
-      # Overwrites any existing release for this version (delete + recreate).
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Optional release — on a v* tag push, or a manual run with release=true.
+  # Tag / title / bin names follow the initial v1.0.0 release for consistency.
+  # ═══════════════════════════════════════════════════════════════════════════
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.release)
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: meta
+        run: |
+          VER=$(grep -oP '#define\s+BIBLE_FW_VERSION\s+"\K[^"]+' bible_firmware/configs.h)
+          echo "version=$VER" >> "$GITHUB_OUTPUT"
+
+      - name: Download binaries
+        uses: actions/download-artifact@v4
+        with:
+          pattern: bin-*
+          path: dl
+          merge-multiple: true
+
       - name: Create / refresh release
-        if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.release)
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           TAG="v${{ steps.meta.outputs.version }}"
           gh release delete "$TAG" --yes || true
-          gh release create "$TAG" \
-            out/${{ steps.meta.outputs.zip }}.zip out/*.bin \
-            --title "ESP32 Library v${{ steps.meta.outputs.version }} (${{ steps.meta.outputs.commit }})" \
-            --notes "Automated build from commit ${{ steps.meta.outputs.commit }}." \
-            --target "${{ github.event.pull_request.head.sha || github.sha }}"
+          gh release create "$TAG" dl/*.bin \
+            --title "$TAG" \
+            --notes "Automated build of ESP32 Library $TAG." \
+            --target "${{ github.sha }}"
