@@ -112,7 +112,17 @@ static inline int16_t cellH(uint16_t sh) { return (int16_t)(kbH(sh) / KB_ROWS); 
 
 // Options strip sits between the text area and the keyboard. Row count is dynamic
 // (Partial Match, Ignore Punctuation, optional Scope, optional Translation picker).
+//
+// Row height is board-dependent. The input box bottom is fixed at 7 + header(22) +
+// KB_BOX_H(26) = 55 px, while the strip starts at scrH/2 - OPT_ROW_H * rows. On the
+// 240x320 boards with all four rows showing that put the strip at 48 px, 7 px INTO
+// the box; 24 px rows move it back down to 64. The 320x480 Pancake has the strip at
+// 128 px either way, so it keeps the roomier 28 px rows.
+#if defined(MARAUDER_V8) || defined(MARAUDER_V6_1)
+static const int16_t OPT_ROW_H = 24;  // px per option row (short screen)
+#else
 static const int16_t OPT_ROW_H = 28;  // px per option row
+#endif
 static int16_t g_opt_rows = 3;        // set by bibleKeyboardInput() per mode
 static inline int16_t optH()          { return OPT_ROW_H * g_opt_rows; }
 
