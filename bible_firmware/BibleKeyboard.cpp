@@ -33,28 +33,64 @@ static const char ROW1_ALPHA[] = "qwertyuiop";
 static const char ROW2_ALPHA[] = "asdfghjkl";
 static const char ROW3_ALPHA[] = "zxcvbnm.";  // cols 0-7; cols 8-9 = CAPS key
 
-static const char ROW0_SYM[] = "!@#$%^&*()";
-static const char ROW1_SYM[] = "`~-_=+[]{}";
-static const char ROW2_SYM[] = "\\|;:'\"<>";
-static const char ROW3_SYM[] = ",./?\0\0\0\0";
+// Symbol page row 0 holds the German umlauts (they used to sit in the control row;
+// moving them here frees that row for wider SPACE / BKSP / OK keys). Bytes are the
+// private codes used in verse storage so a search compares directly: 0x81=ä 0x83=ö
+// 0x85=ü 0x86=ß. With CAPS on, ä/ö/ü emit 0x80/0x82/0x84 (ß has no uppercase).
+static const char ROW0_SYM[] = { (char)0x81, (char)0x83, (char)0x85, (char)0x86, 0 };
+static const char ROW1_SYM[] = "!?.,;:'\"-_";
+static const char ROW2_SYM[] = "()[]{}<>/\\";
+static const char ROW3_SYM[] = "@#$%&*+=`~";
 
 // Fraktur symbol page — used only when a Fraktur songbook is open. Exposes the
 // blackletter ligatures and German typographic marks so they can be searched.
 // Bytes emitted match verse-storage encoding so the search compares directly:
 //   '#'=long-s ſ  '|'=tz  0xA1=ch  0xBF=ck  0xB4=´
 //   0x87=„ 0x88=" 0x89=‚ 0x8A=' 0x8B=' 0x8C=– 0x8D=— 0x8E=…
-static const char FROW0_SYM[] = { '#', '|', (char)0xA1, (char)0xBF, (char)0xB4,
+// Row 0 is the umlauts (same as the normal page); the ligature/typographic sets and
+// punctuation shift down a row to make room.
+static const char FROW0_SYM[] = { (char)0x81, (char)0x83, (char)0x85, (char)0x86, 0 }; // ä ö ü ß
+static const char FROW1_SYM[] = { '#', '|', (char)0xA1, (char)0xBF, (char)0xB4,
                                   '.', ',', '?', 0 };                 // ſ tz ch ck ´ . , ?
-static const char FROW1_SYM[] = { (char)0x87, (char)0x88, (char)0x89, (char)0x8A,
+static const char FROW2_SYM[] = { (char)0x87, (char)0x88, (char)0x89, (char)0x8A,
                                   (char)0x8B, (char)0x8C, (char)0x8D, (char)0x8E, 0 }; // „ " ‚ ' ' – — …
-static const char FROW2_SYM[] = "!?-()'\":";                          // ! ? - ( ) ' " :
-static const char FROW3_SYM[] = "@&*+=_;/";                           // @ & * + = _ ; /
+static const char FROW3_SYM[] = "!?-()'\":";                          // ! ? - ( ) ' " :
 
-// Control row (row 4) columns:
-//  0 = CANCEL   1 = SYM/ABC   2 = ä/Ä   3 = ö/Ö   4 = ü/Ü   5 = ß
-//  6-7 = SPACE (2 cols)   8 = BKSP   9 = OK
+// Control row (row 4) — now only 5 keys (the umlauts moved to the symbol page):
+//  CANCEL(1.5)  SYM/ABC(1.5)  SPACE(4)  BKSP(1.5)  OK(1.5) = 10 cells
 
 enum KbLayout { KB_ALPHA = 0, KB_SYMBOLS };
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Control row (row 4) geometry — shared by the drawing and hit-test code so they
+// can never drift. With the umlauts moved to the symbol page this is the FlipSocial
+// layout: SPACE is a 4-cell bar and the four side keys are 1.5 cells each, which
+// pushes OK away from BKSP so an OK meant as backspace is far less likely.
+//   CANCEL(1.5)  SYM/ABC(1.5)  SPACE(4)  BKSP(1.5)  OK(1.5) = 10 cells
+// ─────────────────────────────────────────────────────────────────────────────
+enum KeyKind { KK_NONE, KK_CHAR, KK_CAPS, KK_CANCEL, KK_LAYOUT,
+               KK_SPACE, KK_BKSP, KK_OK };
+struct CtrlKey { KeyKind kind; int16_t x, w; };
+static const int KB_CTRL_N = 5;
+static void kbCtrlKeys(int16_t cW, CtrlKey out[KB_CTRL_N]) {
+    int16_t hw = cW / 2;                                    // half a cell
+    out[0] = { KK_CANCEL, 0,                      (int16_t)(cW + hw) };
+    out[1] = { KK_LAYOUT, (int16_t)(cW + hw),     (int16_t)(cW + hw) };
+    out[2] = { KK_SPACE,  (int16_t)(3 * cW),      (int16_t)(4 * cW)  };
+    out[3] = { KK_BKSP,   (int16_t)(7 * cW),      (int16_t)(cW + hw) };
+    out[4] = { KK_OK,     (int16_t)(8 * cW + hw), (int16_t)(cW + hw) };
+}
+
+// Apply CAPS to a symbol-page umlaut byte (ä ö ü → Ä Ö Ü; ß unchanged).
+static inline char kbUmlautCase(char c, bool caps) {
+    if (!caps) return c;
+    switch ((uint8_t)c) {
+        case 0x81: return (char)0x80;   // ä → Ä
+        case 0x83: return (char)0x82;   // ö → Ö
+        case 0x85: return (char)0x84;   // ü → Ü
+        default:   return c;            // ß and everything else
+    }
+}
 enum KbResult  { KBR_NONE, KBR_CHANGED, KBR_DONE, KBR_CANCEL, KBR_LAYOUT, KBR_CAPS };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -133,33 +169,6 @@ static void kbUtf8(uint16_t uni, char out[4]) {
         out[1] = (char)(0x80 | ((uni >> 6) & 0x3F));
         out[2] = (char)(0x80 | (uni & 0x3F)); out[3] = 0;
     }
-}
-
-// Draw an umlaut key label — the real glyph from the loaded smooth UI font (which
-// includes Ä ä Ö ö Ü ü natively), mapped from the base letter.
-static void drawUmlautLabel(TFT_eSPI& tft,
-                             int16_t kx, int16_t ky, int16_t cw, int16_t ch,
-                             char base, uint16_t key_fg, uint16_t key_bg) {
-    uint16_t uni;
-    switch (base) {
-        case 'A': uni = 0xC4; break; case 'a': uni = 0xE4; break;
-        case 'O': uni = 0xD6; break; case 'o': uni = 0xF6; break;
-        case 'U': uni = 0xDC; break; default:  uni = 0xFC; break;   // u/U
-    }
-    char u8[4]; kbUtf8(uni, u8);
-    int16_t ty = ky + (ch - 16) / 2;
-    tft.setTextColor(key_fg, key_bg);
-    tft.drawCentreString(u8, kx + cw / 2, ty, 2);
-}
-
-// Draw the ß key label — real glyph (U+00DF) from the loaded smooth UI font.
-static void drawSzligLabel(TFT_eSPI& tft,
-                            int16_t kx, int16_t ky, int16_t cw, int16_t ch,
-                            uint16_t key_fg, uint16_t key_bg) {
-    char u8[4]; kbUtf8(0xDF, u8);
-    int16_t ty = ky + (ch - 16) / 2;
-    tft.setTextColor(key_fg, key_bg);
-    tft.drawCentreString(u8, kx + cw / 2, ty, 2);
 }
 
 // Draw the options strip. Rows in fixed order (only present ones are drawn):
@@ -244,44 +253,164 @@ static void drawOptions(TFT_eSPI& tft, uint16_t fg, uint16_t bg,
 // Draw the text area (top half of screen minus options strip): title + current buffer.
 // German private codes 0x80-0x86 are mapped to their real Unicode glyphs and drawn
 // with the loaded smooth UI font (which includes Ä ä Ö ö Ü ü ß).
+// ─────────────────────────────────────────────────────────────────────────────
+// Input box: cursor, horizontal scrolling and char count
+// A header line (title + "used/max" count) sits above a framed box holding the
+// typed text. The cursor can be placed anywhere in the text and long entries
+// scroll horizontally, so any part of a long query stays reachable.
+// ─────────────────────────────────────────────────────────────────────────────
+static const int16_t KB_BOX_H = 26;
+
+// Header height: a title line, or a bare strip that still fits the char count.
+static inline int16_t kbHeaderH(const char* title) {
+    return (title && title[0]) ? 22 : 20;
+}
+// Rect of the framed input box, so taps inside it can move the cursor / scroll.
+static void kbBoxRect(uint16_t scrW, const char* title,
+                      int16_t& x, int16_t& y, int16_t& w, int16_t& h) {
+    x = 4;
+    y = (int16_t)(7 + kbHeaderH(title));
+    w = (int16_t)scrW - 8;
+    h = KB_BOX_H;
+}
+// Width of one buffer byte as drawn — private code → real glyph in the ACTIVE font.
+// The caller must have the typed-text font loaded.
+static int16_t kbCharW(TFT_eSPI& tft, uint8_t c) {
+    char u8[4]; kbUtf8(kbPrivToUnicode(c), u8);
+    return (int16_t)tft.textWidth(u8);
+}
+// Width of buffer[a..b) as drawn.
+static int16_t kbSubW(TFT_eSPI& tft, const char* buf, size_t a, size_t b) {
+    int16_t w = 0;
+    for (size_t i = a; i < b && buf[i]; i++) w += kbCharW(tft, (uint8_t)buf[i]);
+    return w;
+}
+// Character index nearest a tap `relx` px from the text's left edge.
+static size_t kbIndexAt(TFT_eSPI& tft, const char* buf, size_t viewStart, int16_t relx) {
+    size_t n = strlen(buf);
+    if (relx <= 0) return viewStart;
+    int16_t acc = 0;
+    for (size_t i = viewStart; i < n; i++) {
+        int16_t cw = kbCharW(tft, (uint8_t)buf[i]);
+        if (relx < acc + cw / 2) return i;
+        acc += cw;
+    }
+    return n;
+}
+// Largest viewStart that still shows the end of the text within maxW — clamps
+// manual swipe-scrolling so it can't run off past the last character.
+static size_t kbMaxView(TFT_eSPI& tft, const char* buf, int16_t maxW) {
+    size_t s = strlen(buf);
+    int16_t w = 0;
+    while (s > 0) {
+        int16_t cw = kbCharW(tft, (uint8_t)buf[s - 1]);
+        if (w + cw > maxW) break;
+        w += cw; s--;
+    }
+    return s;
+}
+// Insert / delete AT THE CURSOR (not just at the end of the buffer).
+static bool kbInsertByte(char* buf, size_t bufLen, size_t& cursor, char c) {
+    size_t len = strlen(buf);
+    if (len + 1 >= bufLen) return false;
+    if (cursor > len) cursor = len;
+    memmove(buf + cursor + 1, buf + cursor, len - cursor + 1);   // shift incl. NUL
+    buf[cursor] = c;
+    cursor++;
+    return true;
+}
+static bool kbBackspaceAt(char* buf, size_t& cursor) {
+    if (cursor == 0) return false;
+    size_t len = strlen(buf);
+    memmove(buf + cursor - 1, buf + cursor, len - cursor + 1);
+    cursor--;
+    return true;
+}
+
+// Partial redraw for typing / cursor moves: only the box interior (text + caret)
+// and the char count. No full-area clear, so the top doesn't flash.
+static void drawTextLine(TFT_eSPI& tft, uint16_t fg, uint16_t bg,
+                         uint16_t scrW, const char* title, const char* buffer,
+                         size_t cursor, size_t& viewStart, size_t bufLen,
+                         bool followCursor = true) {
+    int16_t bx, by, bw, bh; kbBoxRect(scrW, title, bx, by, bw, bh);
+    int16_t tx   = bx + 4;
+    int16_t ty   = by + (bh - 18) / 2;
+    int16_t maxW = bw - 10;
+    const char* p = buffer ? buffer : "";
+    size_t n = strlen(p);
+    if (cursor > n) cursor = n;
+
+    // Typed text uses the active font (Fraktur for a Fraktur songbook).
+    tft.loadFont(g_kb_main_font);
+    tft.fillRect(bx + 1, by + 1, bw - 2, bh - 2, bg);      // clear box interior only
+
+    // Follow mode keeps the cursor inside the window; manual (swipe) mode honours
+    // the caller's viewStart as-is.
+    if (followCursor) {
+        if (cursor < viewStart) viewStart = cursor;
+        while (viewStart < cursor && kbSubW(tft, p, viewStart, cursor) > maxW) viewStart++;
+    }
+
+    tft.setTextColor(fg, bg);
+    tft.setCursor(tx, ty);
+    int16_t w = 0;
+    for (size_t i = viewStart; i < n; i++) {
+        int16_t cw = kbCharW(tft, (uint8_t)p[i]);
+        if (w + cw > maxW) break;
+        tft.drawGlyph(kbPrivToUnicode((uint8_t)p[i]));
+        w += cw;
+    }
+
+    // Caret — only when the cursor is inside the visible window.
+    if (cursor >= viewStart) {
+        int16_t caretX = tx + kbSubW(tft, p, viewStart, cursor);
+        if (caretX <= bx + bw - 3) tft.fillRect(caretX, ty, 2, 18, fg);
+    }
+
+    // Char count "used/max" at the top-right of the header (normal UI font).
+    tft.loadFont(g_kb_font_main);
+    char cnt[20];
+    snprintf(cnt, sizeof(cnt), "%u/%u", (unsigned)n, (unsigned)(bufLen ? bufLen - 1 : 0));
+    int16_t cwid = (int16_t)tft.textWidth(cnt, 2);
+    tft.fillRect((int16_t)scrW - 8 - cwid, 4, cwid + 6, 18, bg);
+    tft.setTextColor((uint16_t)0x8410, bg);                // gray: legible either theme
+    tft.setTextDatum(TR_DATUM);
+    tft.drawString(cnt, (int16_t)scrW - 6, 6, 2);
+    tft.setTextDatum(TL_DATUM);
+    tft.loadFont(g_kb_main_font);
+}
+
+// Full redraw of the top area: title, box frame, typed text + caret + count.
 static void drawTextArea(TFT_eSPI& tft, uint16_t fg, uint16_t bg,
                           uint16_t scrW, uint16_t scrH,
                           const char* title, const char* buffer,
+                          size_t cursor, size_t& viewStart, size_t bufLen,
                           bool show_opts = false) {
     int16_t areaH = kbY(scrH) - (show_opts ? optH() : 0);
     tft.fillRect(0, 0, (int16_t)scrW, areaH, bg);
 
     // Leave 7px top margin so umlaut dots (drawn 3px above the character top)
     // have room even without a title line.
-    int16_t y = 7;
     if (title && title[0]) {
         // Title is a fixed UI prompt ("Search Songs:") — always the normal font,
         // never Fraktur, even for a Fraktur songbook.
         tft.loadFont(g_kb_font_main);
         tft.setTextColor(TFT_GREEN, bg);
-        tft.drawString(title, 4, y, 2);
-        y += 22;
+        tft.drawString(title, 4, 7, 2);
     }
 
-    // The typed text previews in the active font (Fraktur for a Fraktur songbook).
-    tft.loadFont(g_kb_main_font);
-    tft.setTextColor(fg, bg);
-    // Draw the buffer with the loaded smooth UI font. Private umlaut codes map to
-    // their real Unicode glyph; drawGlyph advances the cursor for us.
-    tft.setCursor(4, y);
-    const char* p = buffer ? buffer : "";
-    for (; *p && tft.getCursorX() < (int16_t)scrW - 10; p++) {
-        tft.drawGlyph(kbPrivToUnicode((uint8_t)*p));
-    }
-    int16_t x = tft.getCursorX();
-    // Blinking cursor bar
-    tft.fillRect(x, y, 2, 18, fg);
+    int16_t bx, by, bw, bh; kbBoxRect(scrW, title, bx, by, bw, bh);
+    tft.drawRect(bx, by, bw, bh, fg);
+    drawTextLine(tft, fg, bg, scrW, title, buffer, cursor, viewStart, bufLen);
 }
 
 // Draw the full keyboard.
+//   upper    — render letters uppercase (caps-lock OR a pending one-shot shift)
+//   capsMode — CAPS key look: 0 off, 1 shift-once, 2 caps-lock
 static void drawKeyboard(TFT_eSPI& tft, uint16_t fg, uint16_t bg,
                           uint16_t scrW, uint16_t scrH,
-                          KbLayout layout, bool caps) {
+                          KbLayout layout, bool caps, int capsMode) {
     int16_t kY = kbY(scrH);
     int16_t kH = kbH(scrH);
     int16_t cW = cellW(scrW);
@@ -321,6 +450,8 @@ static void drawKeyboard(TFT_eSPI& tft, uint16_t fg, uint16_t bg,
             char c = row[i];
             if (layout == KB_ALPHA && r >= 1 && c >= 'a' && c <= 'z' && caps)
                 c = (char)(c - 'a' + 'A');
+            else if (layout == KB_SYMBOLS && r == 0)
+                c = kbUmlautCase(c, caps);      // symbol row 0 = ä ö ü ß
 
             int16_t ty = rowY + (cH - 16) / 2;
             tft.setTextColor(key_fg, key_bg);
@@ -339,13 +470,17 @@ static void drawKeyboard(TFT_eSPI& tft, uint16_t fg, uint16_t bg,
         if (layout == KB_ALPHA && r == 3) {
             int16_t cx  = 8 * cW;
             int16_t cw2 = 2 * cW;
-            uint16_t caps_bg = caps ? (uint16_t)0x07E0 : key_bg;
-            uint16_t caps_fg = caps ? (uint16_t)TFT_BLACK : key_fg;
+            // Three states: off = plain "CAPS", shift-once = yellow "Caps"
+            // (uppercases only the next letter), caps-lock = green "CAPS".
+            uint16_t caps_bg = (capsMode == 2) ? (uint16_t)0x07E0
+                             : (capsMode == 1) ? (uint16_t)0xFFE0 : key_bg;
+            uint16_t caps_fg = (capsMode == 0) ? key_fg : (uint16_t)TFT_BLACK;
+            const char* caps_lbl = (capsMode == 1) ? "Caps" : "CAPS";
             tft.fillRect(cx, rowY, cw2, cH, caps_bg);
             tft.drawRect(cx, rowY, cw2, cH, bdr);
             tft.loadFont(g_kb_font_main);   // CAPS is a function key — normal font
             tft.setTextColor(caps_fg, caps_bg);
-            tft.drawCentreString(caps ? "caps" : "CAPS", cx + cW, rowY + (cH - 16) / 2, 2);
+            tft.drawCentreString(caps_lbl, cx + cW, rowY + (cH - 16) / 2, 2);
         }
     }
 
@@ -354,97 +489,142 @@ static void drawKeyboard(TFT_eSPI& tft, uint16_t fg, uint16_t bg,
     // Fraktur songbook; the umlaut keys (ä ö ü ß) are letters, so they render in
     // the active (Fraktur) font like the other letter keys.
     tft.loadFont(g_kb_font_main);
-    int16_t rowY = kY + 4 * cH;
+    int16_t rowY  = kY + 4 * cH;
+    int16_t ctrlY = rowY + (cH - 16) / 2;   // top of font-2 text, vertically centred
 
-    int16_t ctrlY = rowY + (cH - 16) / 2;   // top of font-2 text, vertically centred in row
+    CtrlKey ck[KB_CTRL_N];
+    kbCtrlKeys(cW, ck);
 
-    // Col 0: CANCEL (red X) — font 2
-    tft.drawRect(0, rowY, cW, cH, bdr);
-    tft.setTextColor(TFT_RED, key_bg);
-    tft.drawCentreString("X", cW / 2, ctrlY, 2);
-
-    // Col 1: SYM / ABC toggle — centered like the other control-row keys.
-    tft.drawRect(cW, rowY, cW, cH, bdr);
-    tft.setTextColor(key_fg, key_bg);
-    tft.drawCentreString(layout == KB_ALPHA ? "SYM" : "ABC", cW + cW/2, ctrlY, 2);
-
-    // Cols 2-5: umlaut letter keys — draw in the active font (Fraktur when set).
-    tft.loadFont(g_kb_main_font);
-    // Col 2: ä / Ä
-    tft.drawRect(2*cW, rowY, cW, cH, bdr);
-    drawUmlautLabel(tft, 2*cW, rowY, cW, cH, caps ? 'A' : 'a', key_fg, key_bg);
-
-    // Col 3: ö / Ö
-    tft.drawRect(3*cW, rowY, cW, cH, bdr);
-    drawUmlautLabel(tft, 3*cW, rowY, cW, cH, caps ? 'O' : 'o', key_fg, key_bg);
-
-    // Col 4: ü / Ü
-    tft.drawRect(4*cW, rowY, cW, cH, bdr);
-    drawUmlautLabel(tft, 4*cW, rowY, cW, cH, caps ? 'U' : 'u', key_fg, key_bg);
-
-    // Col 5: ß (no uppercase form)
-    tft.drawRect(5*cW, rowY, cW, cH, bdr);
-    drawSzligLabel(tft, 5*cW, rowY, cW, cH, key_fg, key_bg);
-    tft.loadFont(g_kb_font_main);   // back to normal for the remaining function keys
-
-    // Cols 6-7: SPACE (double-wide) — font 2
-    tft.fillRect(6*cW, rowY, 2*cW, cH, key_bg);
-    tft.drawRect(6*cW, rowY, 2*cW, cH, bdr);
-    tft.setTextColor(key_fg, key_bg);
-    tft.drawCentreString("SPC", 7*cW, ctrlY, 2);
-
-    // Col 8: BKSP — pixel left-arrow glyph (arrowhead + shaft)
-    tft.drawRect(8*cW, rowY, cW, cH, bdr);
-    {
-        int16_t ax = 8*cW + cW/2 - 5;  // left edge of arrow, centred in cell
-        int16_t ay = rowY + cH/2;       // vertical centre of cell
-        // Left-pointing arrowhead: tip at ax+0 (centre row), flat base at ax+3 (all rows).
-        // Each row starts at ax+3 and grows LEFT toward the tip as rows approach centre.
-        tft.fillRect(ax+3, ay-3, 1, 1, key_fg);  // 1px — top tip
-        tft.fillRect(ax+2, ay-2, 2, 1, key_fg);  // 2px
-        tft.fillRect(ax+1, ay-1, 3, 1, key_fg);  // 3px
-        tft.fillRect(ax+0, ay+0, 4, 1, key_fg);  // 4px — includes pointed tip
-        tft.fillRect(ax+1, ay+1, 3, 1, key_fg);  // 3px
-        tft.fillRect(ax+2, ay+2, 2, 1, key_fg);  // 2px
-        tft.fillRect(ax+3, ay+3, 1, 1, key_fg);  // 1px — bottom tip
-        // Shaft: 1px tall, from arrowhead base rightward
-        tft.fillRect(ax+4, ay+0, 6, 1, key_fg);
+    for (int i = 0; i < KB_CTRL_N; i++) {
+        const CtrlKey& k = ck[i];
+        int16_t cx = k.x + k.w / 2;
+        switch (k.kind) {
+            case KK_CANCEL:                                  // red X
+                tft.drawRect(k.x, rowY, k.w, cH, bdr);
+                tft.setTextColor(TFT_RED, key_bg);
+                tft.drawCentreString("X", cx, ctrlY, 2);
+                break;
+            case KK_LAYOUT:                                  // SYM / ABC toggle
+                tft.drawRect(k.x, rowY, k.w, cH, bdr);
+                tft.setTextColor(key_fg, key_bg);
+                tft.drawCentreString(layout == KB_ALPHA ? "SYM" : "ABC", cx, ctrlY, 2);
+                break;
+            case KK_SPACE:
+                tft.fillRect(k.x, rowY, k.w, cH, key_bg);
+                tft.drawRect(k.x, rowY, k.w, cH, bdr);
+                tft.setTextColor(key_fg, key_bg);
+                tft.drawCentreString("SPC", cx, ctrlY, 2);
+                break;
+            case KK_BKSP: {                                  // pixel left-arrow glyph
+                tft.drawRect(k.x, rowY, k.w, cH, bdr);
+                int16_t ax = cx - 5, ay = rowY + cH / 2;
+                tft.fillRect(ax+3, ay-3, 1, 1, key_fg);
+                tft.fillRect(ax+2, ay-2, 2, 1, key_fg);
+                tft.fillRect(ax+1, ay-1, 3, 1, key_fg);
+                tft.fillRect(ax+0, ay+0, 4, 1, key_fg);
+                tft.fillRect(ax+1, ay+1, 3, 1, key_fg);
+                tft.fillRect(ax+2, ay+2, 2, 1, key_fg);
+                tft.fillRect(ax+3, ay+3, 1, 1, key_fg);
+                tft.fillRect(ax+4, ay+0, 6, 1, key_fg);
+                break;
+            }
+            case KK_OK:                                      // green OK
+                tft.fillRect(k.x, rowY, k.w, cH, (uint16_t)0x07E0);
+                tft.drawRect(k.x, rowY, k.w, cH, bdr);
+                tft.setTextColor((uint16_t)TFT_BLACK, (uint16_t)0x07E0);
+                tft.drawCentreString("OK", cx, ctrlY, 2);
+                break;
+            default: break;
+        }
     }
-
-    // Col 9: OK (green) — font 2
-    tft.fillRect(9*cW, rowY, cW, cH, (uint16_t)0x07E0);
-    tft.drawRect(9*cW, rowY, cW, cH, bdr);
-    tft.setTextColor((uint16_t)TFT_BLACK, (uint16_t)0x07E0);
-    tft.drawCentreString("OK", 9*cW + cW/2, ctrlY, 2);
 
     tft.loadFont(g_kb_main_font);   // restore active font for the typed-text preview
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Buffer helpers
-// ─────────────────────────────────────────────────────────────────────────────
-static bool appendByte(char* buf, size_t bufLen, char c) {
-    size_t len = strlen(buf);
-    if (len + 1 < bufLen) { buf[len] = c; buf[len+1] = '\0'; return true; }
-    return false;
+// Repaint ONE key in its normal state — clears the momentary press highlight without
+// redrawing the whole board (a full redraw is what made the keyboard flash on every
+// keystroke). CAPS and SYM/ABC change every key's label, so those still do a full
+// drawKeyboard(); everything else only ever repaints the key that was pressed.
+static void drawOneKey(TFT_eSPI& tft, uint16_t fg, uint16_t bg,
+                       KeyKind kind, const int16_t r[4], char ch) {
+    if (kind == KK_NONE || r[2] <= 0) return;
+    uint16_t key_bg = (bg == TFT_WHITE) ? (uint16_t)0xBDF7 : (uint16_t)0x1082;
+    uint16_t key_fg = fg;
+    uint16_t bdr    = (bg == TFT_WHITE) ? (uint16_t)0x8430 : (uint16_t)0x4208;
+    int16_t x = r[0], y = r[1], w = r[2], h = r[3];
+    int16_t cx = x + w / 2, ty = y + (h - 16) / 2;
+
+    tft.fillRect(x, y, w, h, (kind == KK_OK) ? (uint16_t)0x07E0 : key_bg);
+    tft.drawRect(x, y, w, h, bdr);
+
+    switch (kind) {
+        case KK_CHAR:
+            tft.loadFont(g_kb_main_font);          // active font (umlauts / Fraktur)
+            tft.setTextColor(key_fg, key_bg);
+            if ((uint8_t)ch >= 0x80) {             // private/Latin-1 → real glyph
+                char u8[4]; kbUtf8(kbPrivToUnicode((uint8_t)ch), u8);
+                tft.drawCentreString(u8, cx, ty, 2);
+            } else {
+                char s[2] = { ch, '\0' };
+                tft.drawCentreString(s, cx, ty, 2);
+            }
+            break;
+        case KK_SPACE:
+            tft.loadFont(g_kb_font_main);
+            tft.setTextColor(key_fg, key_bg);
+            tft.drawCentreString("SPC", cx, ty, 2);
+            break;
+        case KK_CANCEL:
+            tft.loadFont(g_kb_font_main);
+            tft.setTextColor(TFT_RED, key_bg);
+            tft.drawCentreString("X", cx, ty, 2);
+            break;
+        case KK_OK:
+            tft.loadFont(g_kb_font_main);
+            tft.setTextColor((uint16_t)TFT_BLACK, (uint16_t)0x07E0);
+            tft.drawCentreString("OK", cx, ty, 2);
+            break;
+        case KK_BKSP: {                            // pixel left-arrow glyph
+            int16_t ax = cx - 5, ay = y + h / 2;
+            tft.fillRect(ax+3, ay-3, 1, 1, key_fg);
+            tft.fillRect(ax+2, ay-2, 2, 1, key_fg);
+            tft.fillRect(ax+1, ay-1, 3, 1, key_fg);
+            tft.fillRect(ax+0, ay+0, 4, 1, key_fg);
+            tft.fillRect(ax+1, ay+1, 3, 1, key_fg);
+            tft.fillRect(ax+2, ay+2, 2, 1, key_fg);
+            tft.fillRect(ax+3, ay+3, 1, 1, key_fg);
+            tft.fillRect(ax+4, ay+0, 6, 1, key_fg);
+            break;
+        }
+        default: break;
+    }
+    tft.loadFont(g_kb_main_font);                  // restore the typed-text font
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Touch-event handler — returns what action occurred
 // ─────────────────────────────────────────────────────────────────────────────
+// `cursor` is the insertion point (edits happen there, not at the end). When given,
+// hitRect[4] receives the pressed key's rect, *hitKind its kind and *hitChar the
+// character it produced — enough for the caller to flash the key and then repaint
+// just that one key (no full-keyboard redraw, so the board doesn't flash).
 static KbResult handleKbTouch(uint16_t tx, uint16_t ty,
                                uint16_t scrW, uint16_t scrH,
-                               char* buffer, size_t bufLen,
-                               KbLayout layout, bool caps) {
+                               char* buffer, size_t bufLen, size_t& cursor,
+                               KbLayout layout, bool caps,
+                               int16_t* hitRect = nullptr, KeyKind* hitKind = nullptr,
+                               char* hitChar = nullptr) {
     int16_t kY = kbY(scrH);
     int16_t kH = kbH(scrH);
     int16_t cW = cellW(scrW);
     int16_t cH = cellH(scrH);
 
+    if (hitKind) *hitKind = KK_NONE;
     if ((int16_t)ty < kY || (int16_t)ty >= kY + kH) return KBR_NONE;
 
     int row = ((int16_t)ty - kY) / cH;
     if (row < 0 || row >= KB_ROWS) return KBR_NONE;
+    int16_t rowY = kY + (int16_t)row * cH;
 
     const char* alphaRows[4] = { ROW0_ALPHA, ROW1_ALPHA, ROW2_ALPHA, ROW3_ALPHA };
     const char* symRows[4];
@@ -459,13 +639,20 @@ static KbResult handleKbTouch(uint16_t tx, uint16_t ty,
 
         if (layout == KB_ALPHA && row == 3) {
             // Cols 8-9 = CAPS
-            if ((int16_t)tx >= 8 * cW) return KBR_CAPS;
+            if ((int16_t)tx >= 8 * cW) {
+                if (hitRect) { hitRect[0] = 8 * cW; hitRect[1] = rowY; hitRect[2] = 2 * cW; hitRect[3] = cH; }
+                if (hitKind) *hitKind = KK_CAPS;
+                return KBR_CAPS;
+            }
             // Cols 0-7 = chars
             int col = (int16_t)tx / cW;
             if (col < 0 || col >= rowLen) return KBR_NONE;
             char c = rowStr[col];
             if (c >= 'a' && c <= 'z' && caps) c = (char)(c - 'a' + 'A');
-            return appendByte(buffer, bufLen, c) ? KBR_CHANGED : KBR_NONE;
+            if (hitRect) { hitRect[0] = (int16_t)col * cW; hitRect[1] = rowY; hitRect[2] = cW; hitRect[3] = cH; }
+            if (hitKind) *hitKind = KK_CHAR;
+            if (hitChar) *hitChar = c;
+            return kbInsertByte(buffer, bufLen, cursor, c) ? KBR_CHANGED : KBR_NONE;
         }
 
         // All other rows: centred
@@ -475,33 +662,38 @@ static KbResult handleKbTouch(uint16_t tx, uint16_t ty,
         char c = rowStr[col];
         if (layout == KB_ALPHA && row >= 1 && c >= 'a' && c <= 'z' && caps)
             c = (char)(c - 'a' + 'A');
-        return appendByte(buffer, bufLen, c) ? KBR_CHANGED : KBR_NONE;
+        else if (layout == KB_SYMBOLS && row == 0)
+            c = kbUmlautCase(c, caps);      // symbol row 0 = ä ö ü ß
+        if (hitRect) { hitRect[0] = (int16_t)col * cW + xOff; hitRect[1] = rowY; hitRect[2] = cW; hitRect[3] = cH; }
+        if (hitKind) *hitKind = KK_CHAR;
+        if (hitChar) *hitChar = c;
+        return kbInsertByte(buffer, bufLen, cursor, c) ? KBR_CHANGED : KBR_NONE;
     }
 
     // ── Control row 4 ────────────────────────────────────────────────────
-    int col = (int16_t)tx / cW;
-    switch (col) {
-        case 0:  return KBR_CANCEL;
-        case 1:  return KBR_LAYOUT;
-        case 2:  // ä or Ä
-            return appendByte(buffer, bufLen, (char)(caps ? 0x80 : 0x81)) ? KBR_CHANGED : KBR_NONE;
-        case 3:  // ö or Ö
-            return appendByte(buffer, bufLen, (char)(caps ? 0x82 : 0x83)) ? KBR_CHANGED : KBR_NONE;
-        case 4:  // ü or Ü
-            return appendByte(buffer, bufLen, (char)(caps ? 0x84 : 0x85)) ? KBR_CHANGED : KBR_NONE;
-        case 5:  // ß (no uppercase)
-            return appendByte(buffer, bufLen, (char)0x86) ? KBR_CHANGED : KBR_NONE;
-        case 6:  // SPACE (left cell of double-wide)
-        case 7:  // SPACE (right cell)
-            return appendByte(buffer, bufLen, ' ') ? KBR_CHANGED : KBR_NONE;
-        case 8: {  // BKSP
-            size_t len = strlen(buffer);
-            if (len > 0) { buffer[len - 1] = '\0'; return KBR_CHANGED; }
-            return KBR_NONE;
+    // Geometry comes from the shared kbCtrlKeys() table (keys are no longer a
+    // uniform cell wide), and edits happen AT THE CURSOR rather than at the end.
+    {
+        CtrlKey ck[KB_CTRL_N];
+        kbCtrlKeys(cW, ck);
+        for (int i = 0; i < KB_CTRL_N; i++) {
+            const CtrlKey& k = ck[i];
+            if ((int16_t)tx < k.x || (int16_t)tx >= k.x + k.w) continue;
+            if (hitRect) { hitRect[0] = k.x; hitRect[1] = rowY; hitRect[2] = k.w; hitRect[3] = cH; }
+            if (hitKind) *hitKind = k.kind;
+            switch (k.kind) {
+                case KK_CANCEL: return KBR_CANCEL;
+                case KK_LAYOUT: return KBR_LAYOUT;
+                case KK_OK:     return KBR_DONE;
+                case KK_SPACE:
+                    return kbInsertByte(buffer, bufLen, cursor, ' ') ? KBR_CHANGED : KBR_NONE;
+                case KK_BKSP:
+                    return kbBackspaceAt(buffer, cursor) ? KBR_CHANGED : KBR_NONE;
+                default: return KBR_NONE;
+            }
         }
-        case 9:  return KBR_DONE;
-        default: return KBR_NONE;
     }
+    return KBR_NONE;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -546,14 +738,26 @@ bool bibleKeyboardInput(TFT_eSPI& tft,
     g_opt_rows = 2 + (has_scope ? 1 : 0) + (has_trans ? 1 : 0);      // pm + ip + extras
 
     KbLayout layout = KB_ALPHA;
-    bool     caps   = false;
+    // CAPS has three states, like the FlipSocial keyboard:
+    //   tap        → shift-once (uppercase the next letter only, yellow "Caps")
+    //   hold 450ms → caps-lock  (stays uppercase, green "CAPS")
+    //   tap while locked → off
+    bool     capsLock  = false;
+    bool     shiftOnce = false;
+    auto upperNow = [&]() { return capsLock || shiftOnce; };
+    auto capsMode = [&]() { return capsLock ? 2 : (shiftOnce ? 1 : 0); };
+    const uint32_t CAPS_HOLD_MS = 450;
 
     auto curDictName = [&]() -> const char* {
         if (dict_names && dict_sel && *dict_sel < dict_count) return dict_names[*dict_sel];
         return nullptr;
     };
 
-    drawTextArea(tft, fg, bg, scrW, scrH, title, buffer, show_opts);
+    size_t cursor    = strlen(buffer);   // insertion point within the text
+    size_t viewStart = 0;                // first visible char (horizontal scroll)
+    const uint32_t MIN_FLASH_MS = 55;    // keep the press highlight visible this long
+
+    drawTextArea(tft, fg, bg, scrW, scrH, title, buffer, cursor, viewStart, bufLen, show_opts);
     if (show_opts) {
         bool    pm = partial_match ? *partial_match : true;
         bool    ip = ignore_punct  ? *ignore_punct  : true;
@@ -562,7 +766,7 @@ bool bibleKeyboardInput(TFT_eSPI& tft,
                     has_scope, sc, scope_label, scope_opts, scope_count,
                     has_trans, dict_label, curDictName());
     }
-    drawKeyboard(tft, fg, bg, scrW, scrH, layout, caps);
+    drawKeyboard(tft, fg, bg, scrW, scrH, layout, upperNow(), capsMode());
 
     uint32_t lastTouch = 0;
     const uint32_t debounce = 150;
@@ -603,8 +807,9 @@ bool bibleKeyboardInput(TFT_eSPI& tft,
                                 g_frak_kb      = nf;
                                 g_kb_main_font = nf ? frak_font : g_kb_font_main;
                                 tft.loadFont(g_kb_main_font);
-                                drawKeyboard(tft, fg, bg, scrW, scrH, layout, caps);
-                                drawTextArea(tft, fg, bg, scrW, scrH, title, buffer, show_opts);
+                                drawKeyboard(tft, fg, bg, scrW, scrH, layout, upperNow(), capsMode());
+                                drawTextArea(tft, fg, bg, scrW, scrH, title, buffer,
+                                             cursor, viewStart, bufLen, show_opts);
                             }
                         }
                     }
@@ -618,13 +823,95 @@ bool bibleKeyboardInput(TFT_eSPI& tft,
                 continue;
             }
 
-            KbResult r = handleKbTouch(tx, ty, scrW, scrH, buffer, bufLen, layout, caps);
+            // Input box: a tap moves the cursor to that character; a horizontal swipe
+            // scrolls the text so any edit point in a long entry stays reachable.
+            {
+                int16_t bx, by, bw, bh; kbBoxRect(scrW, title, bx, by, bw, bh);
+                if ((int16_t)tx >= bx && (int16_t)tx < bx + bw &&
+                    (int16_t)ty >= by && (int16_t)ty < by + bh) {
+                    tft.loadFont(g_kb_main_font);
+                    int16_t maxW    = bw - 10;
+                    size_t  maxView = kbMaxView(tft, buffer, maxW);
+                    int16_t downX   = (int16_t)tx, lastX = downX;
+                    int16_t travel = 0, accum = 0;
+                    bool    swiping = false;
+                    uint16_t rx = tx, ry = ty;
+                    for (;;) {
+                        if (!kb_rawTouch(tft, &rx, &ry)) break;      // released
+                        int16_t cx = (int16_t)rx;
+                        int16_t ad = cx - downX; if (ad < 0) ad = -ad;
+                        if (ad > travel) travel = ad;
+                        if (travel > 8) swiping = true;              // past jitter → swipe
+                        if (swiping) {
+                            accum += lastX - cx;                     // >0 : finger went left
+                            while (accum > 0 && viewStart < maxView) {
+                                int16_t cw = kbCharW(tft, (uint8_t)buffer[viewStart]);
+                                if (accum < cw) break;
+                                accum -= cw; viewStart++;
+                            }
+                            while (accum < 0 && viewStart > 0) {
+                                int16_t cw = kbCharW(tft, (uint8_t)buffer[viewStart - 1]);
+                                if (-accum < cw) break;
+                                accum += cw; viewStart--;
+                            }
+                            lastX = cx;
+                            drawTextLine(tft, fg, bg, scrW, title, buffer,
+                                         cursor, viewStart, bufLen, false);
+                        }
+                        delay(8); yield();
+                    }
+                    if (!swiping) {                                  // tap → place cursor
+                        cursor = kbIndexAt(tft, buffer, viewStart, downX - (bx + 4));
+                        drawTextLine(tft, fg, bg, scrW, title, buffer,
+                                     cursor, viewStart, bufLen);
+                    }
+                    continue;
+                }
+            }
+
+            int16_t hit[4] = { 0, 0, 0, 0 };
+            KeyKind hk = KK_NONE;
+            char    hc = 0;
+            KbResult r = handleKbTouch(tx, ty, scrW, scrH, buffer, bufLen, cursor,
+                                       layout, upperNow(), hit, &hk, &hc);
+
+            // Momentary press highlight: invert the key, hold it briefly / until
+            // release, then restore the board. Holding CAPS past CAPS_HOLD_MS turns
+            // it into a caps-lock instead of a one-shot shift.
+            bool flashed = false;
+            bool held    = false;
+            if (hk != KK_NONE && hit[2] > 0) {
+                tft.fillRect(hit[0], hit[1], hit[2], hit[3], fg);
+                flashed = true;
+                uint32_t t0 = millis();
+                for (;;) {
+                    uint16_t rx2, ry2;
+                    bool     down = kb_rawTouch(tft, &rx2, &ry2);
+                    uint32_t el   = millis() - t0;
+                    if (hk == KK_CAPS && down && el >= CAPS_HOLD_MS) { held = true; break; }
+                    if (!down && el >= MIN_FLASH_MS) break;
+                    if (el > 1200) break;                 // safety: stuck touch
+                    delay(8); yield();
+                }
+                // A recognised hold: wait for the finger to actually come up so the
+                // release isn't re-read as a fresh tap.
+                if (held) { uint16_t rx2, ry2; while (kb_rawTouch(tft, &rx2, &ry2)) { delay(8); yield(); } }
+            }
+
             switch (r) {
-                case KBR_CHANGED:
-                    drawTextArea(tft, fg, bg, scrW, scrH, title, buffer, show_opts);
+                case KBR_CHANGED: {
+                    // A one-shot shift is consumed by the letter just typed. That flips
+                    // every letter's case, so it's the one edit needing a full redraw;
+                    // otherwise only the pressed key is repainted (no board flash).
+                    bool oneShot = (hk == KK_CHAR) && shiftOnce && !capsLock;
+                    if (oneShot) shiftOnce = false;
+                    drawTextLine(tft, fg, bg, scrW, title, buffer, cursor, viewStart, bufLen);
+                    if (oneShot)      drawKeyboard(tft, fg, bg, scrW, scrH, layout, upperNow(), capsMode());
+                    else if (flashed) drawOneKey(tft, fg, bg, hk, hit, hc);
                     break;
+                }
                 case KBR_DONE:
-                    drawTextArea(tft, fg, bg, scrW, scrH, title, buffer, show_opts);
+                    drawTextLine(tft, fg, bg, scrW, title, buffer, cursor, viewStart, bufLen);
                     tft.loadFont(g_kb_font_main);   // restore UI font for later draws
                     return true;
                 case KBR_CANCEL:
@@ -632,13 +919,17 @@ bool bibleKeyboardInput(TFT_eSPI& tft,
                     return false;
                 case KBR_LAYOUT:
                     layout = (layout == KB_ALPHA) ? KB_SYMBOLS : KB_ALPHA;
-                    drawKeyboard(tft, fg, bg, scrW, scrH, layout, caps);
+                    drawKeyboard(tft, fg, bg, scrW, scrH, layout, upperNow(), capsMode());
                     break;
                 case KBR_CAPS:
-                    caps = !caps;
-                    drawKeyboard(tft, fg, bg, scrW, scrH, layout, caps);
+                    if (held)          { capsLock = !capsLock; shiftOnce = false; }  // hold → lock
+                    else if (capsLock) { capsLock = false; }                         // tap while locked → off
+                    else               { shiftOnce = !shiftOnce; }                   // tap → one-shot shift
+                    drawKeyboard(tft, fg, bg, scrW, scrH, layout, upperNow(), capsMode());
                     break;
-                default: break;
+                default:
+                    if (flashed) drawOneKey(tft, fg, bg, hk, hit, hc);
+                    break;
             }
         }
         delay(5);

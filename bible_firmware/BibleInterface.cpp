@@ -3095,11 +3095,20 @@ void BibleInterface::drawAbout() {
     about_mcu_y1 = y;
     row("Display", BOARD_DISPLAY);
     row("Touch",   BOARD_TOUCH);
-#ifdef HAS_PSRAM
-    row("PSRAM",   "Yes");
-#else
-    row("PSRAM",   "None");
-#endif
+    // Actual PSRAM size (0 if absent or init failed), rounded to whole MB. More
+    // useful than a bare "Yes" — it also reveals a PSRAM chip that failed to init.
+    {
+        char psbuf[16];
+        size_t ps = ESP.getPsramSize();
+        if (ps >= 1024 * 1024)
+            snprintf(psbuf, sizeof(psbuf), "%u MB",
+                     (unsigned)((ps + 512 * 1024) / (1024 * 1024)));
+        else if (ps > 0)
+            snprintf(psbuf, sizeof(psbuf), "%u KB", (unsigned)(ps / 1024));
+        else
+            snprintf(psbuf, sizeof(psbuf), "None");
+        row("PSRAM", psbuf);
+    }
     row("Built",   __DATE__);
     row("Commit",  BIBLE_FW_COMMIT);
 

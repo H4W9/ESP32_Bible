@@ -158,7 +158,7 @@ jobs:
             bible_firmware
 
       # ── 6. Rename to the release template ───────────────────────────────────
-      #   esp32-library_v<ver>_<board>.bin  (+ _merged / _bootloader / _partitions)
+      #   ESP32_Library_v<ver>_<board>.bin  (+ _merged / _bootloader / _partitions)
       # Unlike the FlipSocial template, EVERY image carries the board name: V6.1 is a
       # different chip (esp32 vs esp32c5) with a different partition table, so its
       # bootloader/partitions are NOT byte-identical to the C5 boards' and would
@@ -169,7 +169,7 @@ jobs:
           echo "Firmware version: $VER"
           mkdir -p out
           D="dist/${{ matrix.board }}"
-          B="esp32-library_v${VER}_${{ matrix.short }}"
+          B="ESP32_Library_v${VER}_${{ matrix.short }}"
           cp "$D/bible_firmware.ino.bin" "out/${B}.bin"
           [ -f "$D/bible_firmware.ino.merged.bin" ]     && cp "$D/bible_firmware.ino.merged.bin"     "out/${B}_merged.bin"     || true
           [ -f "$D/bible_firmware.ino.bootloader.bin" ] && cp "$D/bible_firmware.ino.bootloader.bin" "out/${B}_bootloader.bin" || true
@@ -205,7 +205,7 @@ jobs:
           SHORT=${GIT_SHA:0:7}
           echo "version=$VER"                          >> "$GITHUB_OUTPUT"
           echo "commit=$SHORT"                         >> "$GITHUB_OUTPUT"
-          echo "zip=esp32-library_v${VER}_${SHORT}"    >> "$GITHUB_OUTPUT"
+          echo "zip=ESP32_Library_v${VER}_${SHORT}"    >> "$GITHUB_OUTPUT"
           echo "Version $VER, commit $SHORT"
 
       # Pull every board's renamed .bin into a single flat folder.
