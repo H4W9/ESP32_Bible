@@ -64,30 +64,39 @@ jobs:
           path: ~/.arduino15
           key: esp32-core-${{ runner.os }}-${{ hashFiles('.github/workflows/build.yml') }}
 
-      - name: Install ESP32 Arduino core
+      # Core + NimBLE are PINNED to the exact pair the ESP32Marauder Pancake/V8 (C5)
+      # build ships. An unpinned `core install esp32:esp32` + `lib install NimBLE-Arduino`
+      # pulls whatever is newest, and on the C5 the newest NimBLE-Arduino's ROM-patched
+      # allocator calls (r_os_mempool_init / r_os_memblock_get / r_os_memblock_put) don't
+      # resolve against the newest core's libble_app.a — the link fails with "undefined
+      # reference to r_os_memblock_put". 3.3.4 + 2.3.8 is the known-good combination.
+      - name: Install ESP32 Arduino core 3.3.4
         if: steps.esp32-core-cache.outputs.cache-hit != 'true'
         run: |
           arduino-cli config init --overwrite
           arduino-cli config add board_manager.additional_urls \
-            https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json
+            https://github.com/espressif/arduino-esp32/releases/download/3.3.4/package_esp32_dev_index.json
           arduino-cli core update-index
-          arduino-cli core install esp32:esp32
+          arduino-cli core install esp32:esp32@3.3.4
 
       - name: Restore arduino-cli config (cache hit path)
         if: steps.esp32-core-cache.outputs.cache-hit == 'true'
         run: |
           arduino-cli config init --overwrite
           arduino-cli config add board_manager.additional_urls \
-            https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json
+            https://github.com/espressif/arduino-esp32/releases/download/3.3.4/package_esp32_dev_index.json
 
-      # ── 3b. NimBLE-Arduino (needed by VerseBroadcast.cpp) ──────────────────
-      # Installed into the user libraries dir where arduino-cli compile finds it
-      # automatically (unlike the bundled TFT_eSPI, which is passed via --library).
-      # Runs every build (the ~/Arduino libraries dir isn't part of the core cache).
-      - name: Install NimBLE-Arduino
+      # ── 3b. NimBLE-Arduino 2.3.8 (needed by VerseBroadcast.cpp) ────────────
+      # Checked out at the pinned tag into the user libraries dir where arduino-cli
+      # compile finds it automatically (unlike the bundled TFT_eSPI, which is passed
+      # via --library). NOT `lib install` — that gives the latest, which mis-links on
+      # the C5 (see the note above). Runs every build (~/Arduino isn't in the core cache).
+      - name: Install NimBLE-Arduino 2.3.8
         run: |
-          arduino-cli lib update-index
-          arduino-cli lib install "NimBLE-Arduino"
+          rm -rf ~/Arduino/libraries/NimBLE-Arduino
+          git clone --depth 1 --branch 2.3.8 \
+            https://github.com/h2zero/NimBLE-Arduino.git \
+            ~/Arduino/libraries/NimBLE-Arduino
 
       # ── 4. Per-board configuration ─────────────────────────────────────────
       # Patch configs.h (board #define) and User_Setup_Select.h (TFT driver
