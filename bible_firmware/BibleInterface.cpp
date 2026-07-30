@@ -3973,6 +3973,10 @@ void BibleInterface::updateFling(uint32_t now) {
             max_px = (float)max(0, (int)secLen(cur_sec) - (int)visItems()) * (float)itemH();
             break;
         case BV_CHAPTER_SELECT: {
+            if (mode == MODE_DICT) {   // dict renders a page LIST here, not the grid
+                max_px = (float)max(0, (int)rt_page_count - (int)visItems()) * (float)itemH();
+                break;
+            }
             uint16_t  chaps      = bookChapters(cur_book);
             uint8_t  tile_h     = 36;
             uint8_t  vis_rows   = (uint8_t)(contentH() / tile_h);
@@ -4022,8 +4026,13 @@ void BibleInterface::updateFling(uint32_t now) {
                                             secLen(cur_sec));
             break;
         case BV_CHAPTER_SELECT:
-            menu_scroll = (int16_t)(scroll_px / 36.f);
-            redrawChapterContent();
+            if (mode == MODE_DICT) {   // page list — same geometry as handleListInput
+                menu_scroll = (int16_t)(scroll_px / (float)itemH());
+                redrawListContent(rt_page_count);
+            } else {
+                menu_scroll = (int16_t)(scroll_px / 36.f);
+                redrawChapterContent();
+            }
             break;
         case BV_READING:
             // read_line is updated inside drawReadingLines via scroll_px
