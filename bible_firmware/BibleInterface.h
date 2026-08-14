@@ -304,6 +304,7 @@ private:
     bool     cmt_has_text;      // current (commentary,scope,ref) has content to show
     bool     cmt_scanned;       // cmt_stems[] has been populated at least once
     float    read_scroll_saved; // reader scroll_px, saved on entering commentary
+    float    cmt_text_scroll;   // commentary-text scroll_px, saved while the picker is open
 
     // ── Touch debounce ────────────────────────────────────────────────────
     uint32_t  last_input_ms;
@@ -438,7 +439,8 @@ private:
     void exitCommentaryToReading();           // restore the reader (re-wrap cached chapter)
     void drawCommentary();
     void drawCommentaryLines();
-    void drawCommentaryPicker();              // overlay list of available commentaries
+    void drawCommentaryPicker();              // overlay list of available commentaries (full)
+    void drawCommentaryPickerRows();          // picker rows + scrollbar only (drag/fling path)
     void handleCommentaryInput();
     void loadReadingFont();   // (re)load the VLW font for font_num into line_spr
     void setUiFont(uint8_t idx);  // load a UI VLW size onto tft (menus/chrome/keyboard)

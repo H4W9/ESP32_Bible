@@ -331,7 +331,7 @@ BibleInterface::BibleInterface()
     // Commentary view state (populated lazily by cmtScanList on first CMT open).
     cmt_count = 0; cmt_cur = -1; cmt_scope = 2; cmt_verse = 0;
     cmt_picking = false; cmt_has_text = false; cmt_scanned = false;
-    read_scroll_saved = 0.f;
+    read_scroll_saved = 0.f; cmt_text_scroll = 0.f;
     memset(cmt_stems,  0, sizeof(cmt_stems));
     memset(cmt_titles, 0, sizeof(cmt_titles));
     memset(vbuf_y,        0, sizeof(vbuf_y));
@@ -1668,44 +1668,123 @@ void BibleInterface::drawCommentary() {
     if (cmt_picking) drawCommentaryPicker();
 }
 
+// Full picker draw: header + a clear + the scrolling rows + nav. Called on a full
+// redraw (open / select / scope change). The rows themselves come from
+// drawCommentaryPickerRows(), which is also the per-frame drag/fling redraw path.
 void BibleInterface::drawCommentaryPicker() {
-    // Opaque list panel over the content area; header shows a title.
     drawHeader("Select Commentary");
-    int16_t y0 = (int16_t)contentY();
-    int16_t h  = (int16_t)contentH();
-    tft.fillRect(0, y0, scrW(), h, bg());
-    uint8_t vis = (uint8_t)(h / itemH());
-    for (uint8_t i = 0; i < cmt_count && i < vis; i++)
-        drawListRow(y0 + (int16_t)i * (int16_t)itemH(), cmt_titles[i], (i == (uint8_t)cmt_cur), false);
-    // Nav hint stays the same underneath.
+    tft.fillRect(0, (int16_t)contentY(), scrW(), (int16_t)contentH(), bg());
+    drawCommentaryPickerRows();
     const char* sc = (cmt_scope == 0) ? "Book" : (cmt_scope == 1) ? "Chapter" : "Verse";
     drawNavBar("CMT", sc, "");
+}
+
+// Content-only redraw of the commentary list (rows + scrollbar), scrolled by
+// scroll_px. Mirrors redrawListContent(): each row is blitted as one sprite
+// (6px narrower than the screen so it never overwrites the scrollbar column).
+void BibleInterface::drawCommentaryPickerRows() {
+    int16_t sub_px      = (int16_t)fmodf(scroll_px, (float)itemH());
+    int16_t first       = (int16_t)(scroll_px / (float)itemH());
+    int16_t content_top = (int16_t)contentY();
+    int16_t content_end = content_top + (int16_t)contentH();
+
+    TFT_eSprite row_spr(&tft);
+    bool use_spr = row_spr.createSprite(scrW() - 6, (int16_t)itemH());
+    if (use_spr) {
+        row_spr.setTextWrap(false, false);
+        row_spr.loadFont(VLW_FONTS[2].data);
+        g_ui_vlw = VLW_FONTS[2].data;
+    } else {
+        setUiFont(2);
+    }
+    tft.setViewport(0, content_top, scrW(), contentH(), false);
+
+    for (int i = 0; ; i++) {
+        int16_t idx = first + i;
+        int16_t y   = content_top - sub_px + i * (int16_t)itemH();
+        if (y >= content_end || idx >= (int16_t)cmt_count) break;
+        bool sel = (idx == (int16_t)cmt_cur);
+        if (use_spr) {
+            drawListRowSprite(row_spr, y, cmt_titles[idx], sel, false);
+            row_spr.pushSprite(0, y);
+        } else {
+            drawListRow(y, cmt_titles[idx], sel, false);
+        }
+    }
+
+    tft.resetViewport();
+    if (use_spr) { row_spr.deleteSprite(); ui_font_idx = -1; }
+    setUiFont(2);
+    drawScrollBar((int16_t)cmt_count, (int16_t)visItems(), first);
 }
 
 void BibleInterface::handleCommentaryInput() {
     uint16_t tx, ty;
     bool down = pollTouch(&tx, &ty);
 
-    // ── Commentary picker overlay ────────────────────────────────────────────
+    // ── Commentary picker overlay (scrollable list) ──────────────────────────
     if (cmt_picking) {
+        // Press
         if (down && !touch_was_down) {
-            touch_was_down = true; touch_down_x = tx; touch_down_y = ty;
-        } else if (!down && touch_was_down) {
+            touch_was_down  = true;
+            touch_down_x    = tx;
+            touch_down_y    = ty;
+            scroll_dragging = false;
+            stopFling();
+            drag_origin_px  = scroll_px;
+            return;
+        }
+        // Drag
+        if (down && touch_was_down) {
+            int16_t dy = (int16_t)ty - (int16_t)touch_down_y;
+            if (!scroll_dragging && abs(dy) > 8) scroll_dragging = true;
+            if (scroll_dragging) {
+                float max_px = (float)max(0, (int)cmt_count - (int)visItems()) * (float)itemH();
+                float new_px = drag_origin_px + (float)((int16_t)touch_down_y - (int16_t)ty);
+                if (new_px < 0.f) new_px = 0.f;
+                if (new_px > max_px) new_px = max_px;
+                scroll_px = new_px;
+                recordVel((int16_t)ty, millis());
+                drawCommentaryPickerRows();
+            }
+            return;
+        }
+        // Lift
+        if (!down && touch_was_down) {
             touch_was_down = false;
-            if ((int16_t)touch_down_y < (int16_t)hdrH()) { cmt_picking = false; needs_redraw = true; return; }
-            int16_t rel = (int16_t)touch_down_y - (int16_t)contentY();
-            uint8_t vis = (uint8_t)(contentH() / itemH());
-            if (rel >= 0) {
-                uint8_t row = (uint8_t)(rel / (int16_t)itemH());
-                if (row < cmt_count && row < vis) {
-                    cmt_cur = (int8_t)row;
+            if (scroll_dragging) {                       // end of a scroll → maybe fling
+                scroll_dragging = false;
+                float v = computeFlingVel();
+                if (fabsf(v) > 50.f) {
+                    fling_vel    = v < -4000.f ? -4000.f : v > 4000.f ? 4000.f : v;
+                    fling_active = true;
+                    fling_ms     = millis();
+                } else {
+                    stopFling();
+                }
+                return;
+            }
+            // Tap (no drag): header cancels; a row selects; anything else closes.
+            if ((int16_t)touch_down_y < (int16_t)hdrH()) {
+                scroll_px = cmt_text_scroll; stopFling();   // restore commentary-text position
+                cmt_picking = false; needs_redraw = true;
+                return;
+            }
+            if ((int16_t)touch_down_y >= (int16_t)contentY()
+                    && (int16_t)touch_down_y < (int16_t)(contentY() + contentH())) {
+                int16_t idx = (int16_t)((scroll_px
+                              + (float)((int16_t)touch_down_y - (int16_t)contentY())) / (float)itemH());
+                if (idx >= 0 && idx < (int16_t)cmt_count) {
+                    cmt_cur = (int8_t)idx;
                     cmt_picking = false;
-                    cmtLoadEntry(cmt_cur, cur_book, cur_chapter, cmt_verse, cmt_scope);
+                    stopFling();
+                    cmtLoadEntry(cmt_cur, cur_book, cur_chapter, cmt_verse, cmt_scope);  // resets scroll_px
                     needs_redraw = true;
                     return;
                 }
             }
-            cmt_picking = false; needs_redraw = true;   // tap outside rows closes
+            scroll_px = cmt_text_scroll; stopFling();     // tap in nav/gap → close
+            cmt_picking = false; needs_redraw = true;
         }
         return;
     }
@@ -1727,7 +1806,13 @@ void BibleInterface::handleCommentaryInput() {
             touch_was_down = false;
             uint16_t third = scrW() / 3;
             if (tx < third) {                          // CMT — open picker
-                if (cmt_count > 0) { cmt_picking = true; needs_redraw = true; }
+                if (cmt_count > 0) {
+                    cmt_text_scroll = scroll_px;       // remember text position for cancel
+                    scroll_px = 0.f;                   // picker opens at the top
+                    stopFling();
+                    cmt_picking = true;
+                    needs_redraw = true;
+                }
                 return;
             }
             if (tx < 2 * third) {                      // Scope — cycle Book→Chapter→Verse
@@ -4142,7 +4227,7 @@ void BibleInterface::goBack() {
             }
             break;
         case BV_COMMENTARY:
-            if (cmt_picking) { cmt_picking = false; needs_redraw = true; }
+            if (cmt_picking) { scroll_px = cmt_text_scroll; cmt_picking = false; needs_redraw = true; }
             else             exitCommentaryToReading();
             break;
         case BV_SETTINGS:
@@ -4412,8 +4497,11 @@ void BibleInterface::updateFling(uint32_t now) {
             break;
         }
         case BV_READING:
-        case BV_COMMENTARY:
             max_px = (float)max(0, (int)line_count - (int)visLines()) * (float)lineH();
+            break;
+        case BV_COMMENTARY:
+            if (cmt_picking) max_px = (float)max(0, (int)cmt_count - (int)visItems()) * (float)itemH();
+            else             max_px = (float)max(0, (int)line_count - (int)visLines()) * (float)lineH();
             break;
         case BV_BOOKMARKS:
             max_px = (float)max(0, (int)bm_count - (int)visItems()) * (float)itemH();
@@ -4467,7 +4555,8 @@ void BibleInterface::updateFling(uint32_t now) {
             drawReadingLines();
             break;
         case BV_COMMENTARY:
-            drawCommentaryLines();
+            if (cmt_picking) drawCommentaryPickerRows();
+            else             drawCommentaryLines();
             break;
         case BV_BOOKMARKS:
             bm_scroll = (int16_t)(scroll_px / (float)itemH());
