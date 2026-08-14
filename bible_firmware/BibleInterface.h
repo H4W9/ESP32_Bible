@@ -46,8 +46,22 @@
 #define BIBLE_SD_BASE      SD_LIB_ROOT "/bible"         // directory scanned for .xml files
 #define SONGS_SD_BASE      SD_LIB_ROOT "/songs"         // Songs mode XML directory
 #define DICT_SD_BASE       SD_LIB_ROOT "/dictionary"    // Dictionary mode XML directory
+#define CMT_SD_BASE        SD_LIB_ROOT "/commentary"    // .cmt commentary files (convert_commentary.py)
 #define BIBLE_BM_FILE      SD_LIB_ROOT "/bible/bookmarks.txt"
 #define BIBLE_SRCH_HIST_FILE    SD_LIB_ROOT "/bible/srch_hist.txt"
+
+// ── Commentary (.cmt) ───────────────────────────────────────────────────────
+// Flat binaries produced by sd_prep/convert_commentary.py from MySword .cmti DBs.
+// Book/Chapter/Verse scope tables, keyed by the firmware BOOKS[] index.
+#define BIBLE_MAX_CMT      64     // max commentaries listed from CMT_SD_BASE
+                                  // (the full free-modules set is 33; leave headroom)
+#define CMT_STEM_LEN       20     // filename stem (no extension)
+#define CMT_TITLE_LEN      40     // display title from the .cmt header
+#ifdef HAS_PSRAM
+#  define CMT_TEXT_MAX   16384    // max bytes of one commentary entry loaded at once
+#else
+#  define CMT_TEXT_MAX    6144
+#endif
 // Runtime structure tables (Songs / Dictionary — loaded from a .toc beside the .xml)
 #define RT_DISP_LEN        48     // book display name buffer (e.g. song title)
 #define RT_CODE_LEN        12     // osis code buffer (e.g. "S730", "SYM")
@@ -116,6 +130,7 @@ enum BibleView {
     BV_BOOK_SELECT,     // pick book within selected section
     BV_CHAPTER_SELECT,  // pick chapter number
     BV_READING,         // full-screen verse reader with page scroll
+    BV_COMMENTARY,      // commentary reader for the current book/chapter/verse
     BV_SETTINGS,        // font size, dark mode, brightness, "Boot Marauder"
     BV_BOOKMARKS,       // saved bookmarks list
     BV_SEARCH_INPUT,    // search history list + "New" keyboard entry
@@ -279,6 +294,19 @@ private:
     uint8_t          sel_verse_first;       // 0 = no selection; else 1-based verse start
     uint8_t          sel_verse_last;        // >= sel_verse_first when selection active
 
+    // ── Commentary view ───────────────────────────────────────────────────
+    char     cmt_stems[BIBLE_MAX_CMT][CMT_STEM_LEN];   // <stem>.cmt filenames (lowercase)
+    char     cmt_titles[BIBLE_MAX_CMT][CMT_TITLE_LEN]; // display titles (private-byte codes)
+    uint8_t  cmt_count;         // number of .cmt files found (0 = none installed)
+    int8_t   cmt_cur;           // selected commentary index into cmt_stems[] (-1 = none)
+    uint8_t  cmt_scope;         // 0=Book · 1=Chapter · 2=Verse
+    uint8_t  cmt_verse;         // 1-based verse the view opened on (0 = none selected)
+    bool     cmt_picking;       // commentary-select overlay is showing
+    bool     cmt_has_text;      // current (commentary,scope,ref) has content to show
+    bool     cmt_scanned;       // cmt_stems[] has been populated at least once
+    float    read_scroll_saved; // reader scroll_px, saved on entering commentary
+    float    cmt_text_scroll;   // commentary-text scroll_px, saved while the picker is open
+
     // ── Touch debounce ────────────────────────────────────────────────────
     uint32_t  last_input_ms;
     bool      last_pressed;
@@ -341,6 +369,7 @@ private:
     // ── Drawing helpers ───────────────────────────────────────────────────
     void drawHeader(const char* title, bool show_back = true);
     void drawNavBar(const char* left, const char* mid, const char* right);
+    void drawNavBar4(const char* a, const char* b, const char* c, const char* d); // 4-button (Pancake reader)
     // Small-chrome helpers: vector selector symbols (no font reload — safe in the
     // per-frame scroll path) and X-Small centered text for buttons/labels.
     void drawChevron(int16_t bx, int16_t by, int16_t bw, int16_t bh, bool right, uint16_t col);
@@ -402,6 +431,18 @@ private:
     void redrawSearchResultsContent(); // partial redraw of search result list
     void drawScrollBar(int16_t total, int16_t vis, int16_t top);
     void drawReadingLines();
+    // ── Commentary ────────────────────────────────────────────────────────
+    void cmtScanList();                       // scan CMT_SD_BASE → cmt_stems[]/cmt_titles[]
+    bool cmtReadTitle(const char* stem, char* out, size_t n);  // read Title from a .cmt header
+    bool cmtLoadEntry(int8_t which, uint16_t book, uint16_t chap,
+                      uint8_t verse, uint8_t scope);   // fill lines[] for one entry; false if none
+    void goToCommentary();                    // open commentary for the current reading position
+    void exitCommentaryToReading();           // restore the reader (re-wrap cached chapter)
+    void drawCommentary();
+    void drawCommentaryLines();
+    void drawCommentaryPicker();              // overlay list of available commentaries (full)
+    void drawCommentaryPickerRows();          // picker rows + scrollbar only (drag/fling path)
+    void handleCommentaryInput();
     void loadReadingFont();   // (re)load the VLW font for font_num into line_spr
     void setUiFont(uint8_t idx);  // load a UI VLW size onto tft (menus/chrome/keyboard)
     void setUiFontEx(uint8_t idx, bool frak_title);  // normal or Fraktur-title family
