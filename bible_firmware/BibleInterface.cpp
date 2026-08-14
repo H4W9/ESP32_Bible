@@ -1571,8 +1571,10 @@ void BibleInterface::goToCommentary() {
 
 void BibleInterface::exitCommentaryToReading() {
     stopFling();
-    g_read_fraktur = false;                  // Bible reader is non-Fraktur
-    buildWrappedLines();                     // re-wrap the still-cached chapter
+    // Restore the reading font for the active translation — commentary forced the
+    // normal (non-Fraktur) font, but the Bible translation may itself be Fraktur.
+    g_read_fraktur = transIsFraktur(cur_trans);
+    buildWrappedLines();                     // re-wrap the still-cached chapter (correct font metrics)
     view = BV_READING;
     scroll_px = read_scroll_saved;
     read_line = (int16_t)(scroll_px / (float)lineH());

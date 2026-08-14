@@ -103,6 +103,9 @@ def html_to_text(s):
     s = re.sub(r"(?i)<p\b[^>]*>", "", s)
     s = re.sub(r"(?i)<br\s*/?>", "\n", s)
     s = re.sub(r"(?i)</?(div|li|tr)\b[^>]*>", "\n", s)
+    # Headings (MyBible KingComments use <h3>) → their own line, blank line after.
+    s = re.sub(r"(?i)<h[1-6]\b[^>]*>", "\n", s)
+    s = re.sub(r"(?i)</h[1-6]\s*>", "\n\n", s)
     # <ref>..</ref> / <a>..</a> keep their inner text; drop every other tag.
     s = TAG_RE.sub("", s)
     # Entities (&quot; &amp; &#8212; …).
@@ -159,26 +162,46 @@ def convert_one(src, dst):
     con.text_factory = lambda b: b.decode("utf-8", "replace")
     cur = con.cursor()
 
+    have = {r[0] for r in cur.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'")}
+
     title, abbr = os.path.splitext(os.path.basename(src))[0], ""
-    try:
-        row = cur.execute(
-            "SELECT Title, Abbreviation FROM Details LIMIT 1").fetchone()
-        if row:
-            title = (row[0] or title).strip()
-            abbr = (row[1] or "").strip()
-    except sqlite3.OperationalError:
-        pass
+    # MySword uses Details(Title,Abbreviation); MyBible uses details(title,abbreviation).
+    for tbl, tcol, acol in (("Details", "Title", "Abbreviation"),
+                            ("details", "title", "abbreviation")):
+        if tbl not in have:
+            continue
+        try:
+            row = cur.execute(
+                f"SELECT {tcol}, {acol} FROM {tbl} LIMIT 1").fetchone()
+            if row:
+                title = (row[0] or title).strip()
+                abbr = (row[1] or "").strip()
+        except sqlite3.OperationalError:
+            pass
+        break
 
     pool = TextPool()
     book_idx, chap_idx, verse_idx = [], [], []
     skipped = 0
 
-    def tables():
-        names = {r[0] for r in cur.execute(
-            "SELECT name FROM sqlite_master WHERE type='table'")}
-        return names
-
-    have = tables()
+    # ── MyBible schema: one flat `commentary` table, verse-scope only ─────────
+    if "commentary" in have and "VerseCommentary" not in have:
+        for bk, ch, fromv, tov, com in cur.execute(
+                "SELECT book, chapter, fromverse, toverse, data FROM commentary"):
+            fw = mysword_to_fw(bk)
+            if fw is None:
+                skipped += 1
+                continue
+            rel, ln = pool.add(encode_text(html_to_text(com)))
+            if ln:
+                cb = ch or 0
+                verse_idx.append((fw, cb, fromv or 0, cb, tov or (fromv or 0), rel, ln))
+        con.close()
+        _write_cmt(dst, title, abbr, book_idx, chap_idx, verse_idx, pool)
+        return {"title": title, "abbr": abbr, "book": 0, "chap": 0,
+                "verse": len(verse_idx), "text_bytes": len(pool.buf),
+                "skipped": skipped, "size": os.path.getsize(dst)}
 
     if "BookCommentary" in have:
         for bk, com in cur.execute(
@@ -215,8 +238,17 @@ def convert_one(src, dst):
                 verse_idx.append((fw, chB or 0, vB or 0, chE or (chB or 0),
                                   vE or (vB or 0), rel, ln))
     con.close()
+    _write_cmt(dst, title, abbr, book_idx, chap_idx, verse_idx, pool)
+    return {
+        "title": title, "abbr": abbr,
+        "book": len(book_idx), "chap": len(chap_idx), "verse": len(verse_idx),
+        "text_bytes": len(pool.buf), "skipped": skipped,
+        "size": os.path.getsize(dst),
+    }
 
-    # Sort for firmware binary search.
+
+def _write_cmt(dst, title, abbr, book_idx, chap_idx, verse_idx, pool):
+    """Sort the index tables and write the .cmt binary (shared by both schemas)."""
     book_idx.sort(key=lambda e: e[0])
     chap_idx.sort(key=lambda e: (e[0], e[1]))
     verse_idx.sort(key=lambda e: (e[0], e[1], e[2]))
@@ -255,23 +287,23 @@ def convert_one(src, dst):
                                 text_off + rel, ln))
         f.write(pool.buf)
 
-    return {
-        "title": title, "abbr": abbr,
-        "book": len(book_idx), "chap": len(chap_idx), "verse": len(verse_idx),
-        "text_bytes": len(pool.buf), "skipped": skipped,
-        "size": os.path.getsize(dst),
-    }
-
 
 def main():
     repo = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
     default_in = os.path.join(
         repo, "ESP32_Sword", "sd_data", "sword", "free modules")
-    ap = argparse.ArgumentParser(description="Convert .cmti commentaries to .cmt")
+    ap = argparse.ArgumentParser(
+        description="Convert MySword .cmti / MyBible .mybible commentaries to .cmt")
     ap.add_argument("--in", dest="indir", default=default_in)
     ap.add_argument("--out", dest="outdir", default="commentary_out")
     ap.add_argument("--only", default="",
                     help="comma-separated basenames (no .cmti) to convert")
+    ap.add_argument("--files", default="",
+                    help="comma-separated explicit source paths (any schema/extension)")
+    ap.add_argument("--names", default="",
+                    help="comma-separated output stems for --files (must fit the "
+                         "firmware's 19-char limit and be unique); defaults to the "
+                         "source basename")
     args = ap.parse_args()
 
     try:
@@ -280,18 +312,40 @@ def main():
         pass
 
     os.makedirs(args.outdir, exist_ok=True)
-    files = sorted(glob.glob(os.path.join(args.indir, "*.cmti")))
-    only = {s.strip() for s in args.only.split(",") if s.strip()}
-    if only:
-        files = [f for f in files
-                 if os.path.splitext(os.path.basename(f))[0] in only]
-    if not files:
-        print("No .cmti files matched.", file=sys.stderr)
+
+    # Explicit file list (with optional output-name overrides) takes precedence.
+    explicit = [s.strip() for s in args.files.split(",") if s.strip()]
+    if explicit:
+        names = [s.strip() for s in args.names.split(",") if s.strip()]
+        if names and len(names) != len(explicit):
+            print("--names count must match --files count.", file=sys.stderr)
+            return 1
+        pairs = [(explicit[i], names[i] if names else None)
+                 for i in range(len(explicit))]
+    else:
+        files = sorted(glob.glob(os.path.join(args.indir, "*.cmti")))
+        only = {s.strip() for s in args.only.split(",") if s.strip()}
+        if only:
+            files = [f for f in files
+                     if os.path.splitext(os.path.basename(f))[0] in only]
+        pairs = [(f, None) for f in files]
+
+    if not pairs:
+        print("No source files matched.", file=sys.stderr)
         return 1
 
-    print(f"Converting {len(files)} commentary file(s) -> {args.outdir}\n")
-    for src in files:
-        name = os.path.splitext(os.path.basename(src))[0]
+    print(f"Converting {len(pairs)} commentary file(s) -> {args.outdir}\n")
+    for src, override in pairs:
+        # Strip a trailing double extension like ".cmt.mybible" down to a clean stem.
+        base = os.path.basename(src)
+        for ext in (".cmt.mybible", ".mybible", ".cmti", ".cmt"):
+            if base.lower().endswith(ext):
+                base = base[:-len(ext)]
+                break
+        name = override or base
+        if len(name) > 19:
+            print(f"  WARNING: '{name}' > 19 chars; the firmware will truncate it "
+                  f"(pass --names to shorten).", file=sys.stderr)
         dst = os.path.join(args.outdir, name + ".cmt")
         try:
             s = convert_one(src, dst)
