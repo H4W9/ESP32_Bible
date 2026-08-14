@@ -18,7 +18,7 @@
 // Bump BIBLE_FW_VERSION whenever you cut a new release.
 // ─────────────────────────────────────────────────────────────────────────────
 #define BIBLE_FW_NAME    "ESP-32 Library"
-#define BIBLE_FW_VERSION "1.0.0"
+#define BIBLE_FW_VERSION "1.1.0"
 #define BIBLE_FW_AUTHOR  "H4W9"
 // Short git commit the build was cut from. Arduino IDE can't inject this, so
 // update it by hand (or run sd_prep/stamp_commit.py) before a release build.
