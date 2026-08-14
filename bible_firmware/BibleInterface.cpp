@@ -328,6 +328,12 @@ BibleInterface::BibleInterface()
 {
     prefs_ns[0] = '\0';   // no NVS namespace open yet (openNvs sets it)
     sr_fwd_bx = sr_bwd_bx = sr_btn_y = 0;   // settings arrow hit-boxes (set on draw)
+    // Commentary view state (populated lazily by cmtScanList on first CMT open).
+    cmt_count = 0; cmt_cur = -1; cmt_scope = 2; cmt_verse = 0;
+    cmt_picking = false; cmt_has_text = false; cmt_scanned = false;
+    read_scroll_saved = 0.f;
+    memset(cmt_stems,  0, sizeof(cmt_stems));
+    memset(cmt_titles, 0, sizeof(cmt_titles));
     memset(vbuf_y,        0, sizeof(vbuf_y));
     memset(vbuf_t,        0, sizeof(vbuf_t));
     trans_marq_str[0] = '\0';
@@ -443,6 +449,7 @@ void BibleInterface::main(uint32_t currentTime) {
             case BV_BOOK_SELECT:     drawBookSelect();     break;
             case BV_CHAPTER_SELECT:  drawChapterSelect();  break;
             case BV_READING:         drawReading();        break;
+            case BV_COMMENTARY:      drawCommentary();     break;
             case BV_SETTINGS:        drawSettings();       break;
             case BV_BOOKMARKS:       drawBookmarks();      break;
             case BV_SEARCH_INPUT:    drawSearchInput();    break;
@@ -462,6 +469,7 @@ void BibleInterface::main(uint32_t currentTime) {
             else                   handleChapterInput();            // numeric grid
             break;
         case BV_READING:         handleReadingInput();                  break;
+        case BV_COMMENTARY:      handleCommentaryInput();               break;
         case BV_SETTINGS:        handleSettingsInput();                 break;
         case BV_BOOKMARKS:       handleBookmarksInput();                break;
         case BV_SEARCH_INPUT:    handleSearchInputInput();              break;
@@ -607,6 +615,7 @@ void BibleInterface::drawHeader(const char* title, bool show_back) {
     // Hidden on the main menu and on menu-opened Settings (no content to search).
     // Positioned to the left of the battery % text.
     bool hide_search = (view == BV_MAIN_MENU) || (view == BV_ABOUT) ||
+                       (view == BV_COMMENTARY) ||
                        (view == BV_SETTINGS && settings_from_menu);
     if (!hide_search) {
         int16_t sb_x = (int16_t)scrW() - 63;
@@ -1382,7 +1391,406 @@ void BibleInterface::drawReading() {
     }
     drawHeader(hdr);
     drawReadingLines();
-    drawNavBar("Marks", "Settings", "+Mark");
+    // Commentary entry point. Small screens (V8/V6.1) have no room for a 4th button,
+    // so the middle "Settings" button becomes "CMT" there; the wider Pancake keeps
+    // all three and gains a 4th "CMT" button. Commentary is a Bible-mode feature.
+#ifdef MARAUDER_PANCAKE
+    if (mode == MODE_BIBLE) drawNavBar4("Marks", "Settings", "+Mark", "CMT");
+    else                    drawNavBar("Marks", "Settings", "+Mark");
+#else
+    if (mode == MODE_BIBLE) drawNavBar("Marks", "CMT", "+Mark");
+    else                    drawNavBar("Marks", "Settings", "+Mark");
+#endif
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Commentary view — reads .cmt files (sd_prep/convert_commentary.py) and shows
+// the note for the current book/chapter/verse. Scope toggles Book/Chapter/Verse;
+// CMT picks the active commentary. Header-back returns to the reader. The reader's
+// verse cache (verse_buf/cached_count) is left untouched, so exit just re-wraps it.
+// ─────────────────────────────────────────────────────────────────────────────
+static inline uint16_t cmtLe16(const uint8_t* p) { return (uint16_t)(p[0] | (p[1] << 8)); }
+static inline uint32_t cmtLe32(const uint8_t* p) {
+    return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+
+bool BibleInterface::cmtReadTitle(const char* stem, char* out, size_t n) {
+    if (!out || n == 0) return false;
+    out[0] = 0;
+    char path[80];
+    snprintf(path, sizeof(path), "%s/%s.cmt", CMT_SD_BASE, stem);
+    File f = SD.open(path);
+    if (!f) return false;
+    uint8_t h[56];
+    if (f.read(h, 56) != 56 || memcmp(h, "BCMT", 4) != 0) { f.close(); return false; }
+    uint32_t toff = cmtLe32(h + 8);
+    uint16_t tlen = cmtLe16(h + 12);
+    if (tlen >= n) tlen = (uint16_t)(n - 1);
+    f.seek(toff);
+    int got = f.read((uint8_t*)out, tlen);
+    f.close();
+    if (got < 0) got = 0;
+    out[got] = 0;
+    return got > 0;
+}
+
+void BibleInterface::cmtScanList() {
+    cmt_count = 0;
+    File root = SD.open(CMT_SD_BASE);
+    if (root) {
+        while (cmt_count < BIBLE_MAX_CMT) {
+            File e = root.openNextFile();
+            if (!e) break;
+            if (e.isDirectory()) { e.close(); continue; }
+            String name = e.name();
+            e.close();
+            name.toLowerCase();
+            if (!name.endsWith(".cmt")) continue;
+            int slash = name.lastIndexOf('/');
+            if (slash >= 0) name = name.substring(slash + 1);
+            String stem = name.substring(0, name.length() - 4);   // strip ".cmt"
+            strncpy(cmt_stems[cmt_count], stem.c_str(), CMT_STEM_LEN - 1);
+            cmt_stems[cmt_count][CMT_STEM_LEN - 1] = 0;
+            if (!cmtReadTitle(cmt_stems[cmt_count], cmt_titles[cmt_count], CMT_TITLE_LEN)) {
+                strncpy(cmt_titles[cmt_count], cmt_stems[cmt_count], CMT_TITLE_LEN - 1);
+                cmt_titles[cmt_count][CMT_TITLE_LEN - 1] = 0;
+            }
+            cmt_count++;
+        }
+        root.close();
+    }
+    // Alphabetical by stem so the picker order is stable.
+    for (uint8_t i = 0; i + 1 < cmt_count; i++)
+        for (uint8_t j = i + 1; j < cmt_count; j++)
+            if (strcmp(cmt_stems[j], cmt_stems[i]) < 0) {
+                char ts[CMT_STEM_LEN];  memcpy(ts, cmt_stems[i], CMT_STEM_LEN);
+                memcpy(cmt_stems[i], cmt_stems[j], CMT_STEM_LEN);  memcpy(cmt_stems[j], ts, CMT_STEM_LEN);
+                char tt[CMT_TITLE_LEN]; memcpy(tt, cmt_titles[i], CMT_TITLE_LEN);
+                memcpy(cmt_titles[i], cmt_titles[j], CMT_TITLE_LEN); memcpy(cmt_titles[j], tt, CMT_TITLE_LEN);
+            }
+    cmt_scanned = true;
+    if (cmt_count == 0) cmt_cur = -1;
+    else if (cmt_cur < 0 || cmt_cur >= (int8_t)cmt_count) cmt_cur = 0;
+}
+
+bool BibleInterface::cmtLoadEntry(int8_t which, uint16_t book, uint16_t chap,
+                                  uint8_t verse, uint8_t scope) {
+    line_count   = 0;
+    cmt_has_text = false;
+    g_read_fraktur = false;                 // commentary text is Latin-script, never Fraktur
+    if (which < 0 || which >= (int8_t)cmt_count) return false;
+
+    char path[80];
+    snprintf(path, sizeof(path), "%s/%s.cmt", CMT_SD_BASE, cmt_stems[which]);
+    File f = SD.open(path);
+    if (!f) return false;
+    uint8_t h[56];
+    if (f.read(h, 56) != 56 || memcmp(h, "BCMT", 4) != 0) { f.close(); return false; }
+    uint32_t n_book  = cmtLe32(h + 20), book_off  = cmtLe32(h + 24);
+    uint32_t n_chap  = cmtLe32(h + 28), chap_off  = cmtLe32(h + 32);
+    uint32_t n_verse = cmtLe32(h + 36), verse_off = cmtLe32(h + 40);
+
+    uint32_t hit_off = 0, hit_len = 0;
+    bool found = false;
+    uint8_t eb[20];
+
+    if (scope == 0) {                        // Book scope: 10B entries keyed by book
+        long lo = 0, hi = (long)n_book;
+        while (lo < hi) {
+            long m = (lo + hi) / 2;
+            f.seek(book_off + (uint32_t)m * 10); f.read(eb, 10);
+            uint16_t b = cmtLe16(eb);
+            if (b < book) lo = m + 1;
+            else if (b > book) hi = m;
+            else { hit_off = cmtLe32(eb + 2); hit_len = cmtLe32(eb + 6); found = true; break; }
+        }
+    } else if (scope == 1) {                 // Chapter scope: 12B keyed by (book,chap)
+        long lo = 0, hi = (long)n_chap;
+        uint32_t want = ((uint32_t)book << 16) | chap;
+        while (lo < hi) {
+            long m = (lo + hi) / 2;
+            f.seek(chap_off + (uint32_t)m * 12); f.read(eb, 12);
+            uint32_t key = ((uint32_t)cmtLe16(eb) << 16) | cmtLe16(eb + 2);
+            if (key < want) lo = m + 1;
+            else if (key > want) hi = m;
+            else { hit_off = cmtLe32(eb + 4); hit_len = cmtLe32(eb + 8); found = true; break; }
+        }
+    } else {                                 // Verse scope: 20B keyed (book,chB); scan vB..vE
+        long lo = 0, hi = (long)n_verse;
+        uint32_t want = ((uint32_t)book << 16) | chap;
+        while (lo < hi) {                    // binary-search to first entry >= (book,chap)
+            long m = (lo + hi) / 2;
+            f.seek(verse_off + (uint32_t)m * 20); f.read(eb, 20);
+            uint32_t key = ((uint32_t)cmtLe16(eb) << 16) | cmtLe16(eb + 2);
+            if (key < want) lo = m + 1; else hi = m;
+        }
+        for (long m = lo; m < (long)n_verse; m++) {
+            f.seek(verse_off + (uint32_t)m * 20); f.read(eb, 20);
+            uint16_t b = cmtLe16(eb), cB = cmtLe16(eb + 2), vB = cmtLe16(eb + 4), vE = cmtLe16(eb + 8);
+            if (b != book || cB != chap) break;
+            uint16_t ve = (vE < vB) ? vB : vE;
+            if (verse >= vB && verse <= ve) { hit_off = cmtLe32(eb + 12); hit_len = cmtLe32(eb + 16); found = true; break; }
+        }
+    }
+
+    if (!found || hit_len == 0) { f.close(); return false; }
+    uint32_t len = hit_len;
+    if (len > (uint32_t)CMT_TEXT_MAX - 1) len = (uint32_t)CMT_TEXT_MAX - 1;
+    char* buf = (char*)malloc(len + 1);
+    if (!buf) { f.close(); return false; }
+    f.seek(hit_off);
+    int got = f.read((uint8_t*)buf, len);
+    f.close();
+    if (got <= 0) { free(buf); return false; }
+    buf[got] = 0;
+
+    uint16_t idx = 0;
+    addWrappedLine(0, buf, (uint16_t)(scrW() - 14), font_num, idx);   // verse_num 0 = plain wrap
+    line_count = idx;
+    free(buf);
+
+    scroll_px = 0.f;
+    read_line = 0;
+    cmt_has_text = (line_count > 0);
+    return cmt_has_text;
+}
+
+void BibleInterface::goToCommentary() {
+    if (mode != MODE_BIBLE) return;          // commentary is a Bible-mode feature
+    stopFling();
+    if (!cmt_scanned || cmt_count == 0) cmtScanList();   // retry if none found yet
+    read_scroll_saved = scroll_px;           // remember the reader's position for exit
+    cmt_verse   = sel_verse_first ? sel_verse_first : 1;
+    cmt_scope   = 2;                          // open at Verse scope for the current verse
+    cmt_picking = false;
+    view = BV_COMMENTARY;
+    if (cmt_count > 0) cmtLoadEntry(cmt_cur, cur_book, cur_chapter, cmt_verse, cmt_scope);
+    else               { line_count = 0; cmt_has_text = false; }
+    needs_redraw = true;
+}
+
+void BibleInterface::exitCommentaryToReading() {
+    stopFling();
+    g_read_fraktur = false;                  // Bible reader is non-Fraktur
+    buildWrappedLines();                     // re-wrap the still-cached chapter
+    view = BV_READING;
+    scroll_px = read_scroll_saved;
+    read_line = (int16_t)(scroll_px / (float)lineH());
+    needs_redraw = true;
+}
+
+void BibleInterface::drawCommentaryLines() {
+    loadReadingFont();
+    int16_t sub_px = (int16_t)fmodf(scroll_px, (float)lineH());
+    int16_t first  = (int16_t)(scroll_px / (float)lineH());
+    uint8_t vis    = visLines() + 1;
+    int16_t cy     = (int16_t)contentY();
+    int16_t ce     = cy + (int16_t)contentH();
+    uint16_t lh    = lineH();
+    read_line = first;
+
+    if (!line_spr.createSprite(scrW(), lh)) {
+        tft.startWrite();
+        tft.fillRect(0, cy, scrW(), contentH(), bg());
+        tft.endWrite();
+        return;
+    }
+    line_spr.setTextWrap(false, false);
+    tft.setViewport(0, cy, scrW(), contentH(), false);
+
+    const int16_t txt_y = 1;
+    for (uint8_t i = 0; i < vis; i++) {
+        int16_t row_y = cy - sub_px + (int16_t)i * (int16_t)lh;
+        if (row_y >= ce) break;
+        int16_t li = first + (int16_t)i;
+        line_spr.fillSprite(bg());
+        if (li >= 0 && li < (int16_t)line_count) {
+            char u8[BIBLE_LINE_BUF * 2];
+            line_spr.setTextColor(font_fg(), bg());
+            line_spr.setCursor(4, txt_y);
+            vlwPrivToUtf8(lines[li], u8, sizeof(u8));
+            line_spr.printToSprite(u8, strlen(u8));
+        }
+        line_spr.pushSprite(0, row_y);
+    }
+    tft.resetViewport();
+    line_spr.deleteSprite();
+}
+
+void BibleInterface::drawCommentary() {
+    tft.fillScreen(bg());
+
+    // Reference for the current scope.
+    const char* bd = bookDisplay(cur_book);
+    char ref[40];
+    if      (cmt_scope == 0) snprintf(ref, sizeof(ref), "%s", bd);
+    else if (cmt_scope == 1) snprintf(ref, sizeof(ref), "%s %u", bd, (unsigned)cur_chapter);
+    else                     snprintf(ref, sizeof(ref), "%s %u:%u", bd, (unsigned)cur_chapter, (unsigned)cmt_verse);
+
+    // Header: short commentary id (the file stem, uppercased) + reference. The full
+    // title is shown in the CMT picker.
+    char hdr[64];
+    if (cmt_cur >= 0 && cmt_cur < (int8_t)cmt_count) {
+        char up[CMT_STEM_LEN];
+        strncpy(up, cmt_stems[cmt_cur], sizeof(up)); up[sizeof(up) - 1] = 0;
+        for (char* p = up; *p; ++p) if (*p >= 'a' && *p <= 'z') *p = (char)(*p - 32);
+        snprintf(hdr, sizeof(hdr), "%s  %s", up, ref);
+    } else {
+        snprintf(hdr, sizeof(hdr), "Commentary");
+    }
+    drawHeader(hdr);
+
+    if (cmt_has_text && line_count > 0) {
+        drawCommentaryLines();
+    } else {
+        // No note at this scope/reference (or no commentaries installed).
+        tft.fillRect(0, contentY(), scrW(), contentH(), bg());
+        tft.setTextColor(dim_fg(), bg());
+        int16_t midy = (int16_t)(contentY() + contentH() / 2);
+        if (cmt_count == 0) {
+            tft.drawCentreString("No commentaries installed", scrW() / 2, midy - 18, 2);
+            tft.drawCentreString("Copy .cmt files to", scrW() / 2, midy + 4, 1);
+            tft.drawCentreString(CMT_SD_BASE, scrW() / 2, midy + 18, 1);
+        } else {
+            const char* sc = (cmt_scope == 0) ? "Book" : (cmt_scope == 1) ? "Chapter" : "Verse";
+            char m2[56];
+            snprintf(m2, sizeof(m2), "No %s commentary", sc);
+            tft.drawCentreString(m2, scrW() / 2, midy - 18, 2);
+            tft.drawCentreString(ref, scrW() / 2, midy + 4, 2);
+            tft.drawCentreString("Try Scope, or CMT for another", scrW() / 2, midy + 26, 1);
+        }
+    }
+
+    // Nav: CMT (pick) · current scope (toggle) · unused.
+    const char* sc = (cmt_scope == 0) ? "Book" : (cmt_scope == 1) ? "Chapter" : "Verse";
+    drawNavBar("CMT", sc, "");
+
+    if (cmt_picking) drawCommentaryPicker();
+}
+
+void BibleInterface::drawCommentaryPicker() {
+    // Opaque list panel over the content area; header shows a title.
+    drawHeader("Select Commentary");
+    int16_t y0 = (int16_t)contentY();
+    int16_t h  = (int16_t)contentH();
+    tft.fillRect(0, y0, scrW(), h, bg());
+    uint8_t vis = (uint8_t)(h / itemH());
+    for (uint8_t i = 0; i < cmt_count && i < vis; i++)
+        drawListRow(y0 + (int16_t)i * (int16_t)itemH(), cmt_titles[i], (i == (uint8_t)cmt_cur), false);
+    // Nav hint stays the same underneath.
+    const char* sc = (cmt_scope == 0) ? "Book" : (cmt_scope == 1) ? "Chapter" : "Verse";
+    drawNavBar("CMT", sc, "");
+}
+
+void BibleInterface::handleCommentaryInput() {
+    uint16_t tx, ty;
+    bool down = pollTouch(&tx, &ty);
+
+    // ── Commentary picker overlay ────────────────────────────────────────────
+    if (cmt_picking) {
+        if (down && !touch_was_down) {
+            touch_was_down = true; touch_down_x = tx; touch_down_y = ty;
+        } else if (!down && touch_was_down) {
+            touch_was_down = false;
+            if ((int16_t)touch_down_y < (int16_t)hdrH()) { cmt_picking = false; needs_redraw = true; return; }
+            int16_t rel = (int16_t)touch_down_y - (int16_t)contentY();
+            uint8_t vis = (uint8_t)(contentH() / itemH());
+            if (rel >= 0) {
+                uint8_t row = (uint8_t)(rel / (int16_t)itemH());
+                if (row < cmt_count && row < vis) {
+                    cmt_cur = (int8_t)row;
+                    cmt_picking = false;
+                    cmtLoadEntry(cmt_cur, cur_book, cur_chapter, cmt_verse, cmt_scope);
+                    needs_redraw = true;
+                    return;
+                }
+            }
+            cmt_picking = false; needs_redraw = true;   // tap outside rows closes
+        }
+        return;
+    }
+
+    // ── Press ────────────────────────────────────────────────────────────────
+    if (down && !touch_was_down) {
+        touch_was_down  = true;
+        touch_down_x    = tx;
+        touch_down_y    = ty;
+        scroll_dragging = false;
+        stopFling();
+        drag_origin_px  = scroll_px;
+        if ((int16_t)ty < (int16_t)hdrH()) {          // header: only the back button acts
+            touch_was_down = false;
+            if (tx < 48) exitCommentaryToReading();
+            return;
+        }
+        if (touchInNav(tx, ty)) {
+            touch_was_down = false;
+            uint16_t third = scrW() / 3;
+            if (tx < third) {                          // CMT — open picker
+                if (cmt_count > 0) { cmt_picking = true; needs_redraw = true; }
+                return;
+            }
+            if (tx < 2 * third) {                      // Scope — cycle Book→Chapter→Verse
+                cmt_scope = (uint8_t)((cmt_scope + 1) % 3);
+                cmtLoadEntry(cmt_cur, cur_book, cur_chapter, cmt_verse, cmt_scope);
+                needs_redraw = true;
+                return;
+            }
+            return;                                    // third button unused
+        }
+        return;
+    }
+
+    // ── Drag ─────────────────────────────────────────────────────────────────
+    if (down && touch_was_down) {
+        int16_t dy = (int16_t)ty - (int16_t)touch_down_y;
+        if (!scroll_dragging && abs(dy) > 8) scroll_dragging = true;
+        if (scroll_dragging) {
+            float max_px = (float)max(0, (int)line_count - (int)visLines()) * (float)lineH();
+            float new_px = drag_origin_px + (float)((int16_t)touch_down_y - (int16_t)ty);
+            if (new_px < 0.f) new_px = 0.f;
+            if (new_px > max_px) new_px = max_px;
+            scroll_px = new_px;
+            recordVel((int16_t)ty, millis());
+            drawCommentaryLines();
+        }
+        return;
+    }
+
+    // ── Lift ─────────────────────────────────────────────────────────────────
+    if (!down && touch_was_down) {
+        touch_was_down = false;
+        if (scroll_dragging) {
+            scroll_dragging = false;
+            float v = computeFlingVel();
+            if (fabsf(v) > 50.f) {
+                fling_vel    = v < -4000.f ? -4000.f : v > 4000.f ? 4000.f : v;
+                fling_active = true;
+                fling_ms     = millis();
+            } else {
+                stopFling();
+            }
+        }
+    }
+}
+
+void BibleInterface::drawNavBar4(const char* a, const char* b, const char* c, const char* d) {
+    uint16_t y     = scrH() - navH();
+    uint16_t q     = scrW() / 4;
+    uint16_t bh    = navH() - 8;
+    uint16_t by    = y + 4;
+    uint16_t bw    = q - 6;
+    tft.fillRect(0, y, scrW(), navH(), bg());
+    tft.drawFastHLine(0, y, scrW(), edgeColor(5, dark_mode ? 0x2104 : 0xC618));
+    const char* labels[4] = { a, b, c, d };
+    for (uint8_t i = 0; i < 4; i++) {
+        if (!labels[i] || !labels[i][0]) continue;
+        uint16_t cx = i * q + q / 2;
+        uint16_t bx = cx - bw / 2;
+        tft.fillRoundRect(bx, by, bw, bh, 4, hdr_bg());
+        tft.drawRoundRect(bx, by, bw, bh, 4, edgeColor(i * 2, dim_fg()));
+        drawSmallCentered(labels[i], cx, by, bh, chromeFg(), hdr_bg());
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2381,9 +2789,24 @@ void BibleInterface::handleReadingInput() {
         }
         if (touchInNav(tx, ty)) {
             touch_was_down = false;
+#ifdef MARAUDER_PANCAKE
+            if (mode == MODE_BIBLE) {   // 4 buttons: Marks · Settings · +Mark · CMT
+                uint16_t q = scrW() / 4;
+                if (tx < q)          { goToBookmarks();      return; }
+                if (tx < 2 * q)      { goToSettings();       return; }
+                if (tx < 3 * q)      { addBookmarkCurrent(); return; }
+                goToCommentary();    return;
+            }
+#endif
             uint16_t third = scrW() / 3;
             if (tx < third)      { goToBookmarks();      return; }
-            if (tx < 2 * third)  { goToSettings();       return; }
+            if (tx < 2 * third) {
+                // Middle button: CMT in Bible mode (small screens), else Settings.
+#if !defined(MARAUDER_PANCAKE)
+                if (mode == MODE_BIBLE) { goToCommentary(); return; }
+#endif
+                goToSettings();       return;
+            }
             addBookmarkCurrent(); return;
         }
         return;
@@ -3718,6 +4141,10 @@ void BibleInterface::goBack() {
                 goToChapter(cur_book);
             }
             break;
+        case BV_COMMENTARY:
+            if (cmt_picking) { cmt_picking = false; needs_redraw = true; }
+            else             exitCommentaryToReading();
+            break;
         case BV_SETTINGS:
             // Restore the active context's look (settings may have previewed another scope).
             settings_scope = settings_from_menu ? 1 : (uint8_t)(mode + 2);
@@ -3985,6 +4412,7 @@ void BibleInterface::updateFling(uint32_t now) {
             break;
         }
         case BV_READING:
+        case BV_COMMENTARY:
             max_px = (float)max(0, (int)line_count - (int)visLines()) * (float)lineH();
             break;
         case BV_BOOKMARKS:
@@ -4037,6 +4465,9 @@ void BibleInterface::updateFling(uint32_t now) {
         case BV_READING:
             // read_line is updated inside drawReadingLines via scroll_px
             drawReadingLines();
+            break;
+        case BV_COMMENTARY:
+            drawCommentaryLines();
             break;
         case BV_BOOKMARKS:
             bm_scroll = (int16_t)(scroll_px / (float)itemH());
@@ -4416,8 +4847,9 @@ void BibleInterface::addWrappedLine(uint8_t verse_num, const char* text,
 
         uint16_t line_max = is_first_line ? first_max_px : max_px;
 
-        if (is_first_line) {
-            // Prefix: "^N|" where N is the verse number
+        if (is_first_line && verse_num > 0) {
+            // Prefix: "^N|" where N is the verse number. verse_num==0 wraps plain
+            // text with no prefix (used by the commentary view).
             out_len = snprintf(out, BIBLE_LINE_BUF, "^%d|", verse_num);
         } else {
             out[0] = 0;

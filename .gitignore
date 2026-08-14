@@ -27,6 +27,7 @@ sd_prep/dictionary/
 sd_prep/dictionary_out/
 sd_prep/dict_out/
 sd_prep/bible_fraktur_out/
+sd_prep/commentary_out/
 
 # Dictionary generator source dumps (Kaikki Wiktionary JSONL, dict.cc txt) — very
 # large, downloaded separately, kept local and out of the repo.
@@ -39,6 +40,11 @@ sd_prep/*-EN.txt
 # loose Bible XML — kept local, out of the repo (like the source spreadsheets).
 sd_prep/bible/
 sd_prep/*.xml
+
+# Source MySword/e-Sword commentary DBs fed to convert_commentary.py — very large,
+# kept local and out of the repo (the .cmt output goes to sd_prep/commentary_out/).
+sd_prep/*.cmti
+sd_prep/commentary/
 
 # Source spreadsheets (song/dictionary data) — kept local, out of the repo.
 *.xlsx

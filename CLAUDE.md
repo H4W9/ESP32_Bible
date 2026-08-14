@@ -34,7 +34,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 The custom partition scheme is **required** — it creates the `ota_0`/`ota_1` dual-boot layout. The Bible firmware flashes to `ota_0` (offset `0x20000`); Marauder goes to `ota_1` (`0x390000`).
 
 ### SD card setup
-Copy OSIS XML Bible files to `/esp32_library/bible/` on a FAT32 SD card. All firmware data lives under `/esp32_library/` (`SD_LIB_ROOT` in `BibleInterface.h`): `bible/`, `songs/`, `dictionary/`, and `splash.raw`/`splash_land.raw`. No pre-processing needed — the firmware streams XML directly.
+Copy OSIS XML Bible files to `/esp32_library/bible/` on a FAT32 SD card. All firmware data lives under `/esp32_library/` (`SD_LIB_ROOT` in `BibleInterface.h`): `bible/`, `songs/`, `dictionary/`, `commentary/`, and `splash.raw`/`splash_land.raw`. No pre-processing needed — the firmware streams XML directly.
+
+**Commentary** (`/esp32_library/commentary/`): `.cmt` binaries produced by `sd_prep/convert_commentary.py` from MySword/e-Sword `.cmti` SQLite databases. Each `.cmt` is a seek-friendly flat file (little-endian header + sorted Book/Chapter/Verse index tables keyed by the firmware `BOOKS[]` index + a private-byte text blob). The reader (`BV_COMMENTARY`) binary-searches the index for the current book/chapter/verse — no SQLite on-device. In the Bible reader, the `CMT` footer button opens it (replaces `Settings` on V8/V6.1; a 4th button on the wider Pancake). Scope toggles Book/Chapter/Verse; the `CMT` button in-view picks the active commentary; header-back returns to the reader.
 
 ---
 
