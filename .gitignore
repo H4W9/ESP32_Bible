@@ -44,6 +44,7 @@ sd_prep/*.xml
 # Source MySword/e-Sword commentary DBs fed to convert_commentary.py — very large,
 # kept local and out of the repo (the .cmt output goes to sd_prep/commentary_out/).
 sd_prep/*.cmti
+sd_prep/*.mybible
 sd_prep/commentary/
 
 # Source spreadsheets (song/dictionary data) — kept local, out of the repo.

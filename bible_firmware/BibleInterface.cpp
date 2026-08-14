@@ -1857,6 +1857,24 @@ void BibleInterface::handleCommentaryInput() {
             } else {
                 stopFling();
             }
+            return;
+        }
+        // Tap without drag: page up (upper half) / down (lower half), like the reader.
+        // Commentary has no chapter chain, so it just clamps at the top/bottom.
+        if (cmt_has_text && line_count > 0
+                && (int16_t)touch_down_y >= (int16_t)contentY()
+                && (int16_t)touch_down_y < (int16_t)(scrH() - navH())) {
+            float max_px = (float)max(0, (int)line_count - (int)visLines()) * (float)lineH();
+            if ((int16_t)touch_down_y < (int16_t)(scrH() / 2)) {
+                int16_t prev = read_line - (int16_t)visLines();
+                scroll_px = (prev > 0) ? (float)prev * (float)lineH() : 0.f;
+            } else {
+                int16_t next = read_line + (int16_t)visLines();
+                float np = (float)next * (float)lineH();
+                scroll_px = (np > max_px) ? max_px : np;
+            }
+            stopFling();
+            drawCommentaryLines();
         }
     }
 }

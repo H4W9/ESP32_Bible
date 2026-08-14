@@ -53,7 +53,8 @@
 // ── Commentary (.cmt) ───────────────────────────────────────────────────────
 // Flat binaries produced by sd_prep/convert_commentary.py from MySword .cmti DBs.
 // Book/Chapter/Verse scope tables, keyed by the firmware BOOKS[] index.
-#define BIBLE_MAX_CMT      24     // max commentaries listed from CMT_SD_BASE
+#define BIBLE_MAX_CMT      64     // max commentaries listed from CMT_SD_BASE
+                                  // (the full free-modules set is 33; leave headroom)
 #define CMT_STEM_LEN       20     // filename stem (no extension)
 #define CMT_TITLE_LEN      40     // display title from the .cmt header
 #ifdef HAS_PSRAM
